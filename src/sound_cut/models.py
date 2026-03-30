@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, Mapping
 
 
 @dataclass(frozen=True, order=True)
@@ -33,7 +34,10 @@ class SourceMedia:
 class AnalysisTrack:
     name: str
     ranges: tuple[TimeRange, ...]
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 
 @dataclass(frozen=True)

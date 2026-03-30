@@ -3,10 +3,6 @@ from __future__ import annotations
 from sound_cut.models import EditDecisionList, EditOperation, TimeRange
 
 
-def _round(value: float) -> float:
-    return round(value, 3)
-
-
 def _merge_ranges(ranges: tuple[TimeRange, ...], merge_gap_ms: int) -> tuple[TimeRange, ...]:
     if not ranges:
         return ()
@@ -26,8 +22,8 @@ def _pad_ranges(ranges: tuple[TimeRange, ...], duration_s: float, padding_ms: in
     padding_s = padding_ms / 1000
     return tuple(
         TimeRange(
-            start_s=max(0.0, _round(item.start_s - padding_s)),
-            end_s=min(duration_s, _round(item.end_s + padding_s)),
+            start_s=max(0.0, item.start_s - padding_s),
+            end_s=min(duration_s, item.end_s + padding_s),
         )
         for item in ranges
     )
@@ -41,9 +37,9 @@ def build_edit_decision_list(
     min_silence_ms: int,
     merge_gap_ms: int,
 ) -> EditDecisionList:
-    del min_silence_ms
     merged = _merge_ranges(tuple(sorted(speech_ranges)), merge_gap_ms)
-    padded = _merge_ranges(_pad_ranges(merged, duration_s, padding_ms), merge_gap_ms)
+    padded = _pad_ranges(merged, duration_s, padding_ms)
+    padded = _merge_ranges(padded, min_silence_ms)
     keep_ops = tuple(EditOperation("keep", item, "speech") for item in padded if item.duration_s > 0)
     return EditDecisionList(operations=keep_ops)
 
@@ -56,6 +52,6 @@ def source_to_output_time(edl: EditDecisionList, source_time_s: float) -> float 
     cursor = 0.0
     for keep_range in kept_ranges(edl):
         if keep_range.start_s <= source_time_s <= keep_range.end_s:
-            return _round(cursor + (source_time_s - keep_range.start_s))
+            return round(cursor + (source_time_s - keep_range.start_s), 3)
         cursor += keep_range.duration_s
     return None
