@@ -9,7 +9,6 @@ from sound_cut.ffmpeg_tools import normalize_audio_for_analysis, probe_source_me
 from sound_cut.models import RenderPlan, RenderSummary
 from sound_cut.render import render_audio_from_edl
 from sound_cut.timeline import build_edit_decision_list
-from sound_cut.vad import WebRtcSpeechAnalyzer
 
 
 def process_audio(
@@ -17,17 +16,31 @@ def process_audio(
     output_path: Path,
     profile: CutProfile,
     analyzer=None,
+    keep_temp: bool = False,
 ) -> RenderSummary:
     if not input_path.exists():
         raise MediaError(f"Input media not found: {input_path}")
 
     source = probe_source_media(input_path)
 
-    with tempfile.TemporaryDirectory(prefix="sound-cut-analysis-") as temp_dir_name:
-        normalized_path = Path(temp_dir_name) / "analysis.wav"
+    if keep_temp:
+        normalized_path = output_path.with_name(f"{output_path.stem}.analysis.wav")
+        normalized_path.parent.mkdir(parents=True, exist_ok=True)
         normalize_audio_for_analysis(input_path, normalized_path, sample_rate_hz=16_000)
-        speech_analyzer = analyzer or WebRtcSpeechAnalyzer(vad_mode=profile.vad_mode)
-        analysis = speech_analyzer.analyze(normalized_path)
+        if analyzer is None:
+            from sound_cut.vad import WebRtcSpeechAnalyzer
+
+            analyzer = WebRtcSpeechAnalyzer(vad_mode=profile.vad_mode)
+        analysis = analyzer.analyze(normalized_path)
+    else:
+        with tempfile.TemporaryDirectory(prefix="sound-cut-analysis-") as temp_dir_name:
+            normalized_path = Path(temp_dir_name) / "analysis.wav"
+            normalize_audio_for_analysis(input_path, normalized_path, sample_rate_hz=16_000)
+            if analyzer is None:
+                from sound_cut.vad import WebRtcSpeechAnalyzer
+
+                analyzer = WebRtcSpeechAnalyzer(vad_mode=profile.vad_mode)
+            analysis = analyzer.analyze(normalized_path)
 
     if not analysis.ranges:
         raise NoSpeechDetectedError(f"No speech detected in {input_path}")

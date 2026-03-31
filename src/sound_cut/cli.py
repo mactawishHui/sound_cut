@@ -7,7 +7,6 @@ from pathlib import Path
 
 from sound_cut.config import build_profile
 from sound_cut.errors import SoundCutError
-from sound_cut.pipeline import process_audio
 
 
 def _non_negative_int(value: str) -> int:
@@ -44,7 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     profile = replace(profile, **{name: value for name, value in overrides.items() if value is not None})
 
     try:
-        summary = process_audio(args.input, args.output, profile)
+        from sound_cut.pipeline import process_audio
+
+        summary = process_audio(args.input, args.output, profile, keep_temp=args.keep_temp)
     except SoundCutError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
