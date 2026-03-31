@@ -44,7 +44,8 @@ def test_build_edit_decision_list_emits_discard_operations_for_removed_gaps() ->
     assert edl.operations == (
         EditOperation("keep", TimeRange(0.00, 1.10), "speech"),
         EditOperation("discard", TimeRange(1.10, 2.40), "silence"),
-        EditOperation("keep", TimeRange(2.40, 4.00), "speech"),
+        EditOperation("keep", TimeRange(2.40, 3.90), "speech"),
+        EditOperation("keep", TimeRange(3.90, 4.00), "edge-silence"),
     )
     assert kept_ranges(edl) == (
         TimeRange(0.00, 1.10),
@@ -62,7 +63,9 @@ def test_build_edit_decision_list_preserves_sub_threshold_edge_silence() -> None
     )
 
     assert edl.operations == (
-        EditOperation("keep", TimeRange(0.00, 2.00), "speech"),
+        EditOperation("keep", TimeRange(0.00, 0.20), "edge-silence"),
+        EditOperation("keep", TimeRange(0.20, 1.80), "speech"),
+        EditOperation("keep", TimeRange(1.80, 2.00), "edge-silence"),
     )
     assert kept_ranges(edl) == (TimeRange(0.00, 2.00),)
 
@@ -77,9 +80,30 @@ def test_build_edit_decision_list_preserves_edge_silence_at_threshold() -> None:
     )
 
     assert edl.operations == (
-        EditOperation("keep", TimeRange(0.00, 2.00), "speech"),
+        EditOperation("keep", TimeRange(0.00, 0.30), "edge-silence"),
+        EditOperation("keep", TimeRange(0.30, 1.70), "speech"),
+        EditOperation("keep", TimeRange(1.70, 2.00), "edge-silence"),
     )
     assert kept_ranges(edl) == (TimeRange(0.00, 2.00),)
+
+
+def test_build_edit_decision_list_preserves_interior_silence_at_threshold_with_float_noise() -> None:
+    edl = build_edit_decision_list(
+        duration_s=2.00,
+        speech_ranges=(
+            TimeRange(0.00, 0.70),
+            TimeRange(1.0000000005, 1.50),
+        ),
+        padding_ms=0,
+        min_silence_ms=300,
+        merge_gap_ms=0,
+    )
+
+    assert edl.operations == (
+        EditOperation("keep", TimeRange(0.00, 1.50), "speech"),
+        EditOperation("discard", TimeRange(1.50, 2.00), "silence"),
+    )
+    assert kept_ranges(edl) == (TimeRange(0.00, 1.50),)
 
 
 def test_source_to_output_time_remaps_kept_ranges() -> None:
