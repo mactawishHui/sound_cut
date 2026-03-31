@@ -4,6 +4,7 @@ import wave
 
 import pytest
 
+from sound_cut.errors import MediaError
 from sound_cut.models import EditDecisionList, EditOperation, RenderPlan, SourceMedia, TimeRange
 from sound_cut.render import render_audio_from_edl
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
@@ -80,6 +81,30 @@ def test_render_audio_from_edl_handles_empty_keep_set(tmp_path, ffmpeg_available
     assert summary.kept_segment_count == 0
     assert summary.output_duration_s == 0.0
     assert summary.removed_duration_s == pytest.approx(1.0, abs=1e-9)
+
+
+def test_render_audio_from_edl_rejects_non_wav_output(tmp_path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.mp3"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=0.5,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=16_000,
+        channels=1,
+        has_video=False,
+    )
+    plan = RenderPlan(
+        source=source,
+        edl=EditDecisionList(operations=(EditOperation("keep", TimeRange(0.0, 0.5), "speech"),)),
+        output_path=output_path,
+        target="audio",
+        crossfade_ms=10,
+    )
+
+    with pytest.raises(MediaError, match=r"\.wav"):
+        render_audio_from_edl(plan)
 
 
 def test_render_audio_from_edl_preserves_submillisecond_boundaries(tmp_path, ffmpeg_available) -> None:

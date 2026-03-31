@@ -5,6 +5,7 @@ import wave
 from pathlib import Path
 
 from sound_cut.ffmpeg_tools import _require_binary, _run
+from sound_cut.errors import MediaError
 from sound_cut.models import RenderPlan, RenderSummary
 from sound_cut.timeline import kept_ranges
 
@@ -29,6 +30,10 @@ def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
     ffmpeg = _require_binary("ffmpeg")
     input_path = plan.source.input_path
     output_path = plan.output_path
+
+    if output_path.suffix.lower() != ".wav":
+        raise MediaError("render_audio_from_edl only supports .wav output paths")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     ranges = kept_ranges(plan.edl)
