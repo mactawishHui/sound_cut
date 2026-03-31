@@ -62,6 +62,25 @@ def test_main_passes_keep_temp_to_process_audio(monkeypatch: pytest.MonkeyPatch,
     assert captured["keep_temp"] is True
 
 
+def test_main_prints_summary_for_successful_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
+        return importlib.import_module("sound_cut.models").RenderSummary(12.3456, 7.89, 4.4556, 3)
+
+    monkeypatch.setitem(sys.modules, "sound_cut.pipeline", types.SimpleNamespace(process_audio=fake_process_audio))
+
+    exit_code = cli.main([str(tmp_path / "input.wav"), "-o", str(tmp_path / "output.wav")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    assert captured.out == (
+        "input_duration_s=12.346\n"
+        "output_duration_s=7.890\n"
+        "removed_duration_s=4.456\n"
+        "kept_segment_count=3\n"
+    )
+
+
 def test_cli_module_import_does_not_require_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     original_import = builtins.__import__
 

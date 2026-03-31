@@ -50,8 +50,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Input duration: {summary.input_duration_s:.3f}s")
-    print(f"Output duration: {summary.output_duration_s:.3f}s")
-    print(f"Removed duration: {summary.removed_duration_s:.3f}s")
-    print(f"Kept segments: {summary.kept_segment_count}")
+    print(f"input_duration_s={summary.input_duration_s:.3f}")
+    print(f"output_duration_s={summary.output_duration_s:.3f}")
+    print(f"removed_duration_s={summary.removed_duration_s:.3f}")
+    print(f"kept_segment_count={summary.kept_segment_count}")
     return 0
