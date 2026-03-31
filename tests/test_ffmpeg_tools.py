@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import wave
 
+import sound_cut.ffmpeg_tools as ffmpeg_tools
 from sound_cut.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
@@ -40,3 +41,23 @@ def test_normalize_audio_for_analysis_outputs_mono_16k_wave(tmp_path, ffmpeg_ava
         assert handle.getnchannels() == 1
         assert handle.getframerate() == 16_000
         assert handle.getsampwidth() == 2
+
+
+def test_normalize_audio_for_analysis_explicitly_forces_wav_pcm16(monkeypatch, tmp_path) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "normalized.wav"
+    recorded_command: list[str] = []
+
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "_run",
+        lambda command: recorded_command.extend(command),
+    )
+
+    normalize_audio_for_analysis(input_path, output_path, sample_rate_hz=16_000)
+
+    assert "-f" in recorded_command
+    assert "wav" in recorded_command
+    assert "-c:a" in recorded_command
+    assert "pcm_s16le" in recorded_command

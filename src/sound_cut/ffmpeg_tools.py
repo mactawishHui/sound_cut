@@ -65,8 +65,10 @@ def normalize_audio_for_analysis(input_path: Path, output_path: Path, *, sample_
             "1",
             "-ar",
             str(sample_rate_hz),
-            "-sample_fmt",
-            "s16",
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
             str(output_path),
         ]
     )
