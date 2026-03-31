@@ -29,6 +29,22 @@ def _pad_ranges(ranges: tuple[TimeRange, ...], duration_s: float, padding_ms: in
     )
 
 
+def _build_operations(duration_s: float, keep_ranges: tuple[TimeRange, ...]) -> tuple[EditOperation, ...]:
+    operations: list[EditOperation] = []
+    cursor = 0.0
+
+    for keep_range in keep_ranges:
+        if keep_range.start_s > cursor:
+            operations.append(EditOperation("discard", TimeRange(cursor, keep_range.start_s), "silence"))
+        operations.append(EditOperation("keep", keep_range, "speech"))
+        cursor = keep_range.end_s
+
+    if cursor < duration_s:
+        operations.append(EditOperation("discard", TimeRange(cursor, duration_s), "silence"))
+
+    return tuple(operations)
+
+
 def build_edit_decision_list(
     *,
     duration_s: float,
@@ -39,9 +55,8 @@ def build_edit_decision_list(
 ) -> EditDecisionList:
     merged = _merge_ranges(tuple(sorted(speech_ranges)), merge_gap_ms)
     padded = _pad_ranges(merged, duration_s, padding_ms)
-    padded = _merge_ranges(padded, min_silence_ms)
-    keep_ops = tuple(EditOperation("keep", item, "speech") for item in padded if item.duration_s > 0)
-    return EditDecisionList(operations=keep_ops)
+    keep_ranges = tuple(item for item in _merge_ranges(padded, min_silence_ms) if item.duration_s > 0)
+    return EditDecisionList(operations=_build_operations(duration_s, keep_ranges))
 
 
 def kept_ranges(edl: EditDecisionList) -> tuple[TimeRange, ...]:

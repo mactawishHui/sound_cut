@@ -1,7 +1,7 @@
 import pytest
 
 from sound_cut.config import build_profile
-from sound_cut.models import AnalysisTrack, TimeRange
+from sound_cut.models import AnalysisTrack, EditOperation, TimeRange
 from sound_cut.timeline import build_edit_decision_list, kept_ranges, source_to_output_time
 
 
@@ -27,6 +27,31 @@ def test_build_edit_decision_list_keeps_short_pause_and_drops_long_pause() -> No
     assert kept[0].end_s == pytest.approx(1.60)
     assert kept[1].start_s == pytest.approx(2.50)
     assert kept[1].end_s == pytest.approx(3.30)
+
+
+def test_build_edit_decision_list_emits_discard_operations_for_removed_gaps() -> None:
+    edl = build_edit_decision_list(
+        duration_s=4.00,
+        speech_ranges=(
+            TimeRange(0.50, 1.00),
+            TimeRange(2.50, 3.00),
+        ),
+        padding_ms=100,
+        min_silence_ms=300,
+        merge_gap_ms=0,
+    )
+
+    assert edl.operations == (
+        EditOperation("discard", TimeRange(0.00, 0.40), "silence"),
+        EditOperation("keep", TimeRange(0.40, 1.10), "speech"),
+        EditOperation("discard", TimeRange(1.10, 2.40), "silence"),
+        EditOperation("keep", TimeRange(2.40, 3.10), "speech"),
+        EditOperation("discard", TimeRange(3.10, 4.00), "silence"),
+    )
+    assert kept_ranges(edl) == (
+        TimeRange(0.40, 1.10),
+        TimeRange(2.40, 3.10),
+    )
 
 
 def test_source_to_output_time_remaps_kept_ranges() -> None:
