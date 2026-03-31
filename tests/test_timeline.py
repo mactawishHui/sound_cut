@@ -67,6 +67,21 @@ def test_build_edit_decision_list_preserves_sub_threshold_edge_silence() -> None
     assert kept_ranges(edl) == (TimeRange(0.00, 2.00),)
 
 
+def test_build_edit_decision_list_preserves_edge_silence_at_threshold() -> None:
+    edl = build_edit_decision_list(
+        duration_s=2.00,
+        speech_ranges=(TimeRange(0.30, 1.70),),
+        padding_ms=0,
+        min_silence_ms=300,
+        merge_gap_ms=0,
+    )
+
+    assert edl.operations == (
+        EditOperation("keep", TimeRange(0.00, 2.00), "speech"),
+    )
+    assert kept_ranges(edl) == (TimeRange(0.00, 2.00),)
+
+
 def test_source_to_output_time_remaps_kept_ranges() -> None:
     profile = build_profile("balanced")
     speech_ranges = (

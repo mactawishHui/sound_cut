@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from sound_cut.models import EditDecisionList, EditOperation, TimeRange
 
+_EPSILON_S = 1e-9
+
 
 def _merge_ranges(ranges: tuple[TimeRange, ...], merge_gap_ms: int) -> tuple[TimeRange, ...]:
     if not ranges:
@@ -54,11 +56,11 @@ def _preserve_sub_threshold_edge_silence(
     min_silence_s = min_silence_ms / 1000
     updated = list(keep_ranges)
     first = updated[0]
-    if first.start_s < min_silence_s:
+    if first.start_s <= min_silence_s + _EPSILON_S:
         updated[0] = TimeRange(0.0, first.end_s)
 
     last = updated[-1]
-    if duration_s - last.end_s < min_silence_s:
+    if duration_s - last.end_s <= min_silence_s + _EPSILON_S:
         updated[-1] = TimeRange(updated[-1].start_s, duration_s)
 
     return tuple(updated)
