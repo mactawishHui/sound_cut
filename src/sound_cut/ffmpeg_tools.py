@@ -38,18 +38,22 @@ def probe_source_media(input_path: Path) -> SourceMedia:
             str(input_path),
         ]
     )
-    payload = json.loads(result.stdout)
-    streams = payload.get("streams", [])
-    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
-    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
-    return SourceMedia(
-        input_path=input_path,
-        duration_s=float(payload["format"]["duration"]),
-        audio_codec=audio_stream.get("codec_name"),
-        sample_rate_hz=int(audio_stream["sample_rate"]) if audio_stream.get("sample_rate") else None,
-        channels=audio_stream.get("channels"),
-        has_video=video_stream is not None,
-    )
+    try:
+        payload = json.loads(result.stdout)
+        streams = payload["streams"]
+        format_data = payload["format"]
+        audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
+        video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+        return SourceMedia(
+            input_path=input_path,
+            duration_s=float(format_data["duration"]),
+            audio_codec=audio_stream.get("codec_name"),
+            sample_rate_hz=int(audio_stream["sample_rate"]) if audio_stream.get("sample_rate") else None,
+            channels=audio_stream.get("channels"),
+            has_video=video_stream is not None,
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise MediaError(f"Invalid ffprobe JSON for {input_path}") from exc
 
 
 def normalize_audio_for_analysis(input_path: Path, output_path: Path, *, sample_rate_hz: int) -> None:
@@ -58,6 +62,9 @@ def normalize_audio_for_analysis(input_path: Path, output_path: Path, *, sample_
         [
             ffmpeg,
             "-y",
+            "-nostats",
+            "-loglevel",
+            "error",
             "-i",
             str(input_path),
             "-vn",
