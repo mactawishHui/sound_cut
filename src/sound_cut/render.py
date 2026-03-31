@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import wave
 from pathlib import Path
 
 from sound_cut.ffmpeg_tools import _require_binary, _run
@@ -9,7 +10,19 @@ from sound_cut.timeline import kept_ranges
 
 
 def _format_seconds(value: float) -> str:
-    return f"{value:.3f}"
+    return f"{value:.9f}"
+
+
+def _write_empty_wave(path: Path, *, sample_rate_hz: int, channels: int) -> None:
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate_hz)
+
+
+def _wave_duration_s(path: Path) -> float:
+    with wave.open(str(path), "rb") as handle:
+        return handle.getnframes() / handle.getframerate()
 
 
 def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
@@ -20,7 +33,20 @@ def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
 
     ranges = kept_ranges(plan.edl)
     fade_seconds = max(plan.crossfade_ms / 1000, 0.0)
-    kept_duration_s = sum(item.duration_s for item in ranges)
+
+    if not ranges:
+        _write_empty_wave(
+            output_path,
+            sample_rate_hz=plan.source.sample_rate_hz or 44_100,
+            channels=plan.source.channels or 1,
+        )
+        output_duration_s = _wave_duration_s(output_path)
+        return RenderSummary(
+            input_duration_s=plan.source.duration_s,
+            output_duration_s=output_duration_s,
+            removed_duration_s=max(0.0, plan.source.duration_s - output_duration_s),
+            kept_segment_count=0,
+        )
 
     with tempfile.TemporaryDirectory(prefix="sound-cut-render-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
@@ -92,9 +118,10 @@ def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
             ]
         )
 
+    output_duration_s = _wave_duration_s(output_path)
     return RenderSummary(
-        input_duration_s=round(plan.source.duration_s, 3),
-        output_duration_s=round(kept_duration_s, 3),
-        removed_duration_s=round(max(0.0, plan.source.duration_s - kept_duration_s), 3),
+        input_duration_s=plan.source.duration_s,
+        output_duration_s=output_duration_s,
+        removed_duration_s=max(0.0, plan.source.duration_s - output_duration_s),
         kept_segment_count=len(ranges),
     )
