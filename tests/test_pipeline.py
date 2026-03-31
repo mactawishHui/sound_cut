@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from sound_cut.config import build_profile
+from sound_cut.errors import MediaError
 from sound_cut.models import AnalysisTrack, TimeRange
 from sound_cut.pipeline import process_audio
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
@@ -100,3 +101,16 @@ def test_process_audio_honors_falsey_analyzer_injection(tmp_path: Path, ffmpeg_a
 
     assert analyzer.calls
     assert summary.kept_segment_count == 1
+
+
+def test_process_audio_rejects_in_place_output(tmp_path: Path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+
+    with pytest.raises(MediaError, match="must be different"):
+        process_audio(
+            input_path=input_path,
+            output_path=input_path,
+            profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+            analyzer=FakeSpeechAnalyzer((TimeRange(0.0, 0.5),)),
+        )

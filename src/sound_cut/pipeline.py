@@ -18,6 +18,9 @@ def process_audio(
     analyzer=None,
     keep_temp: bool = False,
 ) -> RenderSummary:
+    if input_path.resolve(strict=False) == output_path.resolve(strict=False):
+        raise MediaError(f"Input and output paths must be different: {input_path}")
+
     if not input_path.exists():
         raise MediaError(f"Input media not found: {input_path}")
 
