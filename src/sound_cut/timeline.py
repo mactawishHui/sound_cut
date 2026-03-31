@@ -45,6 +45,25 @@ def _build_operations(duration_s: float, keep_ranges: tuple[TimeRange, ...]) -> 
     return tuple(operations)
 
 
+def _preserve_sub_threshold_edge_silence(
+    duration_s: float, keep_ranges: tuple[TimeRange, ...], min_silence_ms: int
+) -> tuple[TimeRange, ...]:
+    if not keep_ranges:
+        return keep_ranges
+
+    min_silence_s = min_silence_ms / 1000
+    updated = list(keep_ranges)
+    first = updated[0]
+    if first.start_s < min_silence_s:
+        updated[0] = TimeRange(0.0, first.end_s)
+
+    last = updated[-1]
+    if duration_s - last.end_s < min_silence_s:
+        updated[-1] = TimeRange(updated[-1].start_s, duration_s)
+
+    return tuple(updated)
+
+
 def build_edit_decision_list(
     *,
     duration_s: float,
@@ -56,6 +75,7 @@ def build_edit_decision_list(
     merged = _merge_ranges(tuple(sorted(speech_ranges)), merge_gap_ms)
     padded = _pad_ranges(merged, duration_s, padding_ms)
     keep_ranges = tuple(item for item in _merge_ranges(padded, min_silence_ms) if item.duration_s > 0)
+    keep_ranges = _preserve_sub_threshold_edge_silence(duration_s, keep_ranges, min_silence_ms)
     return EditDecisionList(operations=_build_operations(duration_s, keep_ranges))
 
 

@@ -23,7 +23,7 @@ def test_build_edit_decision_list_keeps_short_pause_and_drops_long_pause() -> No
 
     kept = kept_ranges(edl)
     assert len(kept) == 2
-    assert kept[0].start_s == pytest.approx(0.40)
+    assert kept[0].start_s == pytest.approx(0.00)
     assert kept[0].end_s == pytest.approx(1.60)
     assert kept[1].start_s == pytest.approx(2.50)
     assert kept[1].end_s == pytest.approx(3.30)
@@ -33,8 +33,8 @@ def test_build_edit_decision_list_emits_discard_operations_for_removed_gaps() ->
     edl = build_edit_decision_list(
         duration_s=4.00,
         speech_ranges=(
-            TimeRange(0.50, 1.00),
-            TimeRange(2.50, 3.00),
+            TimeRange(0.10, 1.00),
+            TimeRange(2.50, 3.80),
         ),
         padding_ms=100,
         min_silence_ms=300,
@@ -42,16 +42,29 @@ def test_build_edit_decision_list_emits_discard_operations_for_removed_gaps() ->
     )
 
     assert edl.operations == (
-        EditOperation("discard", TimeRange(0.00, 0.40), "silence"),
-        EditOperation("keep", TimeRange(0.40, 1.10), "speech"),
+        EditOperation("keep", TimeRange(0.00, 1.10), "speech"),
         EditOperation("discard", TimeRange(1.10, 2.40), "silence"),
-        EditOperation("keep", TimeRange(2.40, 3.10), "speech"),
-        EditOperation("discard", TimeRange(3.10, 4.00), "silence"),
+        EditOperation("keep", TimeRange(2.40, 4.00), "speech"),
     )
     assert kept_ranges(edl) == (
-        TimeRange(0.40, 1.10),
-        TimeRange(2.40, 3.10),
+        TimeRange(0.00, 1.10),
+        TimeRange(2.40, 4.00),
     )
+
+
+def test_build_edit_decision_list_preserves_sub_threshold_edge_silence() -> None:
+    edl = build_edit_decision_list(
+        duration_s=2.00,
+        speech_ranges=(TimeRange(0.20, 1.80),),
+        padding_ms=0,
+        min_silence_ms=300,
+        merge_gap_ms=0,
+    )
+
+    assert edl.operations == (
+        EditOperation("keep", TimeRange(0.00, 2.00), "speech"),
+    )
+    assert kept_ranges(edl) == (TimeRange(0.00, 2.00),)
 
 
 def test_source_to_output_time_remaps_kept_ranges() -> None:
@@ -69,8 +82,8 @@ def test_source_to_output_time_remaps_kept_ranges() -> None:
         merge_gap_ms=profile.merge_gap_ms,
     )
 
-    assert source_to_output_time(edl, 0.60) == 0.20
-    assert source_to_output_time(edl, 2.60) == 0.90
+    assert source_to_output_time(edl, 0.60) == 0.60
+    assert source_to_output_time(edl, 2.60) == 1.30
     assert source_to_output_time(edl, 1.70) is None
 
 
@@ -96,7 +109,7 @@ def test_min_silence_ms_changes_whether_nearby_speech_is_merged() -> None:
         merge_gap_ms=0,
     )
 
-    assert kept_ranges(merged_edl) == (TimeRange(0.50, 1.75),)
+    assert kept_ranges(merged_edl) == (TimeRange(0.50, 2.00),)
     assert kept_ranges(split_edl) == (
         TimeRange(0.50, 1.00),
         TimeRange(1.25, 1.75),
