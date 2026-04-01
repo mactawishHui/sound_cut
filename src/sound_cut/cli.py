@@ -8,6 +8,8 @@ from pathlib import Path
 from sound_cut.config import build_profile
 from sound_cut.errors import SoundCutError
 
+_SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav"}
+
 
 def _non_negative_int(value: str) -> int:
     parsed_value = int(value)
@@ -16,10 +18,20 @@ def _non_negative_int(value: str) -> int:
     return parsed_value
 
 
+def resolve_output_path(input_path: Path, output_path: Path | None) -> Path:
+    if output_path is not None:
+        return output_path
+
+    suffix = input_path.suffix.lower()
+    if suffix not in _SUPPORTED_DELIVERY_SUFFIXES:
+        suffix = ".m4a"
+    return input_path.with_name(f"{input_path.stem}.cut{suffix}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sound-cut")
     parser.add_argument("input", type=Path)
-    parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument("-o", "--output", type=Path)
     parser.add_argument(
         "--aggressiveness",
         choices=("natural", "balanced", "dense"),
@@ -41,11 +53,12 @@ def main(argv: list[str] | None = None) -> int:
         "crossfade_ms": args.crossfade_ms,
     }
     profile = replace(profile, **{name: value for name, value in overrides.items() if value is not None})
+    output_path = resolve_output_path(args.input, args.output)
 
     try:
         from sound_cut.pipeline import process_audio
 
-        summary = process_audio(args.input, args.output, profile, keep_temp=args.keep_temp)
+        summary = process_audio(args.input, output_path, profile, keep_temp=args.keep_temp)
     except SoundCutError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -8,7 +8,7 @@ import pytest
 
 from sound_cut.config import build_profile
 from sound_cut.errors import MediaError
-from sound_cut.models import AnalysisTrack, TimeRange
+from sound_cut.models import AnalysisTrack, RenderSummary, TimeRange
 from sound_cut.pipeline import process_audio
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
@@ -26,6 +26,15 @@ class FakeSpeechAnalyzer:
 class FalseySpeechAnalyzer(FakeSpeechAnalyzer):
     def __bool__(self) -> bool:
         return False
+
+
+def _fake_render_audio_from_edl(plan) -> RenderSummary:
+    return RenderSummary(
+        input_duration_s=plan.source.duration_s,
+        output_duration_s=plan.source.duration_s,
+        removed_duration_s=0.0,
+        kept_segment_count=sum(1 for operation in plan.edl.operations if operation.action == "keep"),
+    )
 
 
 def _wave_duration_s(path: Path) -> float:
@@ -63,6 +72,64 @@ def test_process_audio_writes_output_and_returns_summary(tmp_path: Path, ffmpeg_
         summary.input_duration_s - summary.output_duration_s,
         abs=1e-9,
     )
+
+
+def test_process_audio_refines_dense_profile_speech_ranges(
+    tmp_path: Path, ffmpeg_available, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=16_000,
+        samples=(
+            tone_samples(sample_rate_hz=16_000, duration_s=0.60)
+            + silence_samples(sample_rate_hz=16_000, duration_s=0.30)
+            + tone_samples(sample_rate_hz=16_000, duration_s=0.60)
+        ),
+    )
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 1.50),))
+    profile = replace(build_profile("dense"), merge_gap_ms=0, min_silence_ms=150, padding_ms=0)
+
+    monkeypatch.setattr("sound_cut.pipeline.render_audio_from_edl", _fake_render_audio_from_edl)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=profile,
+        analyzer=analyzer,
+    )
+
+    assert summary.kept_segment_count == 2
+
+
+def test_process_audio_does_not_refine_balanced_profile_speech_ranges(
+    tmp_path: Path, ffmpeg_available, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=16_000,
+        samples=(
+            tone_samples(sample_rate_hz=16_000, duration_s=0.60)
+            + silence_samples(sample_rate_hz=16_000, duration_s=0.30)
+            + tone_samples(sample_rate_hz=16_000, duration_s=0.60)
+        ),
+    )
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 1.50),))
+    profile = replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=150, padding_ms=0)
+
+    monkeypatch.setattr("sound_cut.pipeline.render_audio_from_edl", _fake_render_audio_from_edl)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=profile,
+        analyzer=analyzer,
+    )
+
+    assert summary.kept_segment_count == 1
 
 
 def test_process_audio_preserves_normalized_analysis_wav_when_keep_temp_true(

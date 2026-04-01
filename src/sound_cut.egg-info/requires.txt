@@ -1,0 +1,4 @@
+webrtcvad==2.0.10
+
+[dev]
+pytest>=8.0

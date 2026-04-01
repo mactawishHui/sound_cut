@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import sound_cut.cli as cli
+from sound_cut.cli import resolve_output_path
 
 
 def test_build_parser_parses_required_arguments(tmp_path: Path) -> None:
@@ -21,6 +22,31 @@ def test_build_parser_parses_required_arguments(tmp_path: Path) -> None:
     assert args.padding_ms is None
     assert args.crossfade_ms is None
     assert args.keep_temp is False
+
+
+def test_resolve_output_path_defaults_to_input_suffix_when_output_is_omitted(tmp_path: Path) -> None:
+    input_path = tmp_path / "sample.mp3"
+
+    resolved = resolve_output_path(input_path, None)
+
+    assert resolved == tmp_path / "sample.cut.mp3"
+
+
+def test_resolve_output_path_uses_explicit_output_path_when_provided(tmp_path: Path) -> None:
+    input_path = tmp_path / "sample.mp3"
+    explicit = tmp_path / "custom.m4a"
+
+    resolved = resolve_output_path(input_path, explicit)
+
+    assert resolved == explicit
+
+
+def test_build_parser_output_is_optional(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args([str(tmp_path / "input.mp3")])
+
+    assert args.output is None
 
 
 @pytest.mark.parametrize("flag", ["--min-silence-ms", "--padding-ms", "--crossfade-ms"])
@@ -60,6 +86,21 @@ def test_main_passes_keep_temp_to_process_audio(monkeypatch: pytest.MonkeyPatch,
 
     assert exit_code == 0
     assert captured["keep_temp"] is True
+
+
+def test_main_infers_output_path_when_omitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
+        captured["output_path"] = output_path
+        return importlib.import_module("sound_cut.models").RenderSummary(1.0, 0.5, 0.5, 1)
+
+    monkeypatch.setitem(sys.modules, "sound_cut.pipeline", types.SimpleNamespace(process_audio=fake_process_audio))
+
+    exit_code = cli.main([str(tmp_path / "input.mp3")])
+
+    assert exit_code == 0
+    assert captured["output_path"] == tmp_path / "input.cut.mp3"
 
 
 def test_main_prints_summary_for_successful_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

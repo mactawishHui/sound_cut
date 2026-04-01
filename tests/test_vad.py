@@ -7,6 +7,7 @@ from sound_cut.models import AnalysisTrack, TimeRange
 from sound_cut import vad as vad_module
 from sound_cut.vad import (
     WebRtcSpeechAnalyzer,
+    collect_speech_ranges,
     collapse_speech_flags,
     frame_duration_bytes,
     split_frames,
@@ -47,6 +48,48 @@ def test_collapse_speech_flags_merges_ranges_within_gap() -> None:
     assert ranges == (TimeRange(0.03, 0.18),)
 
 
+def test_collect_speech_ranges_adds_lead_in_and_hangover_padding() -> None:
+    flags = [False, False, True, True, False, False, False, False]
+
+    ranges = collect_speech_ranges(flags, frame_ms=30, boundary_padding_ms=60)
+
+    assert ranges == (TimeRange(0.00, 0.18),)
+
+
+def test_collect_speech_ranges_keeps_short_false_gap_inside_same_segment() -> None:
+    flags = [False, True, True, False, False, True, True, False, False, False]
+
+    ranges = collect_speech_ranges(flags, frame_ms=30, boundary_padding_ms=60)
+
+    assert ranges == (TimeRange(0.00, 0.27),)
+
+
+def test_collect_speech_ranges_splits_segments_across_long_false_gap() -> None:
+    flags = [
+        False,
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+        False,
+    ]
+
+    ranges = collect_speech_ranges(flags, frame_ms=30, boundary_padding_ms=60)
+
+    assert ranges == (
+        TimeRange(0.00, 0.15),
+        TimeRange(0.21, 0.39),
+    )
+
+
 def test_webrtc_speech_analyzer_analyze_returns_track_for_valid_wav(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -73,12 +116,12 @@ def test_webrtc_speech_analyzer_analyze_returns_track_for_valid_wav(
     )
     write_pcm_wave(wav_path, sample_rate_hz=16000, samples=samples)
 
-    analyzer = WebRtcSpeechAnalyzer(vad_mode=2)
+    analyzer = WebRtcSpeechAnalyzer(vad_mode=2, boundary_padding_ms=30)
     track = analyzer.analyze(wav_path)
 
     assert track == AnalysisTrack(
         name="speech",
-        ranges=(TimeRange(0.00, 0.03),),
+        ranges=(TimeRange(0.00, 0.06),),
         metadata={"frame_ms": "30"},
     )
     assert len(created) == 1

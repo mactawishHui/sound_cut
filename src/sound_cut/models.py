@@ -27,7 +27,18 @@ class SourceMedia:
     audio_codec: str | None
     sample_rate_hz: int | None
     channels: int | None
+    bit_rate_bps: int | None = None
     has_video: bool = False
+
+
+@dataclass(frozen=True)
+class PauseSplitConfig:
+    enabled: bool
+    min_envelope_s: float
+    window_ms: int
+    low_energy_ratio: float
+    min_pause_ms: int
+    context_ms: int
 
 
 @dataclass(frozen=True)

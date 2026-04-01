@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import wave
 from pathlib import Path
 
@@ -69,11 +70,52 @@ def collapse_speech_flags(
     return _merge_ranges(tuple(ranges), merge_gap_ms=merge_gap_ms)
 
 
+def collect_speech_ranges(
+    flags: list[bool], *, frame_ms: int, boundary_padding_ms: int
+) -> tuple[TimeRange, ...]:
+    _validate_frame_ms(frame_ms)
+    if boundary_padding_ms < 0:
+        raise ValueError("boundary_padding_ms must be greater than or equal to 0")
+
+    if not flags:
+        return ()
+
+    padding_frames = math.ceil(boundary_padding_ms / frame_ms)
+    collected: list[TimeRange] = []
+    start_index: int | None = None
+    last_speech_index: int | None = None
+
+    for index, is_speech in enumerate(flags):
+        if is_speech:
+            if start_index is None:
+                start_index = max(0, index - padding_frames)
+            last_speech_index = index
+            continue
+
+        if start_index is None or last_speech_index is None:
+            continue
+
+        if index - last_speech_index > padding_frames:
+            end_index = min(len(flags), last_speech_index + 1 + padding_frames)
+            collected.append(TimeRange(start_index * frame_ms / 1000, end_index * frame_ms / 1000))
+            start_index = None
+            last_speech_index = None
+
+    if start_index is not None and last_speech_index is not None:
+        end_index = min(len(flags), last_speech_index + 1 + padding_frames)
+        collected.append(TimeRange(start_index * frame_ms / 1000, end_index * frame_ms / 1000))
+
+    return _merge_ranges(tuple(collected), merge_gap_ms=0)
+
+
 class WebRtcSpeechAnalyzer:
-    def __init__(self, *, vad_mode: int, frame_ms: int = 30) -> None:
+    def __init__(self, *, vad_mode: int, frame_ms: int = 30, boundary_padding_ms: int = 150) -> None:
         _validate_frame_ms(frame_ms)
+        if boundary_padding_ms < 0:
+            raise ValueError("boundary_padding_ms must be greater than or equal to 0")
         self._vad = webrtcvad.Vad(vad_mode)
         self._frame_ms = frame_ms
+        self._boundary_padding_ms = boundary_padding_ms
 
     def analyze(self, wav_path: Path) -> AnalysisTrack:
         with wave.open(str(wav_path), "rb") as handle:
@@ -99,6 +141,10 @@ class WebRtcSpeechAnalyzer:
         flags = [self._vad.is_speech(frame, sample_rate_hz) for frame in frames]
         return AnalysisTrack(
             name="speech",
-            ranges=collapse_speech_flags(flags, frame_ms=self._frame_ms, merge_gap_ms=0),
+            ranges=collect_speech_ranges(
+                flags,
+                frame_ms=self._frame_ms,
+                boundary_padding_ms=self._boundary_padding_ms,
+            ),
             metadata={"frame_ms": str(self._frame_ms)},
         )

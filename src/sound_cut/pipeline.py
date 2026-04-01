@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 from pathlib import Path
 
@@ -7,8 +8,23 @@ from sound_cut.config import CutProfile
 from sound_cut.errors import MediaError, NoSpeechDetectedError
 from sound_cut.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media
 from sound_cut.models import RenderPlan, RenderSummary
+from sound_cut.pause_splitter import refine_speech_ranges
 from sound_cut.render import render_audio_from_edl
 from sound_cut.timeline import build_edit_decision_list
+
+
+def _refine_analysis_ranges(normalized_path: Path, analysis, profile: CutProfile):
+    if not profile.pause_split.enabled:
+        return analysis
+
+    return replace(
+        analysis,
+        ranges=refine_speech_ranges(
+            normalized_path,
+            coarse_ranges=analysis.ranges,
+            config=profile.pause_split,
+        ),
+    )
 
 
 def process_audio(
@@ -35,6 +51,7 @@ def process_audio(
 
             analyzer = WebRtcSpeechAnalyzer(vad_mode=profile.vad_mode)
         analysis = analyzer.analyze(normalized_path)
+        analysis = _refine_analysis_ranges(normalized_path, analysis, profile)
     else:
         with tempfile.TemporaryDirectory(prefix="sound-cut-analysis-") as temp_dir_name:
             normalized_path = Path(temp_dir_name) / "analysis.wav"
@@ -44,6 +61,7 @@ def process_audio(
 
                 analyzer = WebRtcSpeechAnalyzer(vad_mode=profile.vad_mode)
             analysis = analyzer.analyze(normalized_path)
+            analysis = _refine_analysis_ranges(normalized_path, analysis, profile)
 
     if not analysis.ranges:
         raise NoSpeechDetectedError(f"No speech detected in {input_path}")

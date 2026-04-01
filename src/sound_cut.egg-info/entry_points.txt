@@ -1,0 +1,2 @@
+[console_scripts]
+sound-cut = sound_cut.cli:main
