@@ -8,6 +8,7 @@ import pytest
 
 import sound_cut.cli as cli
 from sound_cut.cli import resolve_output_path
+from sound_cut.core.models import DEFAULT_TARGET_LUFS
 
 
 def test_build_parser_parses_required_arguments(tmp_path: Path) -> None:
@@ -49,6 +50,15 @@ def test_build_parser_output_is_optional(tmp_path: Path) -> None:
     assert args.output is None
 
 
+def test_build_parser_parses_auto_volume_defaults(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args([str(tmp_path / "input.wav"), "--auto-volume"])
+
+    assert args.auto_volume is True
+    assert args.target_lufs is None
+
+
 @pytest.mark.parametrize("flag", ["--min-silence-ms", "--padding-ms", "--crossfade-ms"])
 def test_build_parser_rejects_negative_tuning_arguments(tmp_path: Path, flag: str) -> None:
     parser = cli.build_parser()
@@ -73,7 +83,14 @@ def test_main_returns_1_and_prints_error_for_missing_input(tmp_path: Path, capsy
 def test_main_passes_keep_temp_to_process_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+    ):
         captured["input_path"] = input_path
         captured["output_path"] = output_path
         captured["profile"] = profile
@@ -95,7 +112,14 @@ def test_main_passes_keep_temp_to_process_audio(monkeypatch: pytest.MonkeyPatch,
 def test_main_infers_output_path_when_omitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+    ):
         captured["output_path"] = output_path
         return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
 
@@ -112,7 +136,14 @@ def test_main_infers_output_path_when_omitted(monkeypatch: pytest.MonkeyPatch, t
 
 
 def test_main_prints_summary_for_successful_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+    ):
         return importlib.import_module("sound_cut.core").RenderSummary(12.3456, 7.89, 4.4556, 3)
 
     monkeypatch.setitem(
@@ -144,3 +175,108 @@ def test_cli_module_import_does_not_require_pipeline(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     importlib.reload(cli)
+
+
+def test_main_rejects_target_lufs_without_auto_volume(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([str(tmp_path / "input.wav"), "--target-lufs", "-14.0"])
+
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_main_rejects_non_finite_target_lufs(tmp_path: Path, value: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([str(tmp_path / "input.wav"), "--auto-volume", "--target-lufs", value])
+
+    assert excinfo.value.code == 2
+
+
+def test_main_passes_default_loudness_config_to_process_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+    ):
+        captured["loudness"] = loudness
+        return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
+
+    exit_code = cli.main([str(tmp_path / "input.wav"), "--auto-volume"])
+
+    loudness = captured["loudness"]
+    assert exit_code == 0
+    assert loudness.enabled is True
+    assert loudness.target_lufs == pytest.approx(DEFAULT_TARGET_LUFS)
+
+
+def test_main_passes_disabled_loudness_config_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+    ):
+        captured["loudness"] = loudness
+        return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
+
+    exit_code = cli.main([str(tmp_path / "input.wav")])
+
+    loudness = captured["loudness"]
+    assert exit_code == 0
+    assert loudness.enabled is False
+    assert loudness.target_lufs == pytest.approx(DEFAULT_TARGET_LUFS)
+
+
+def test_main_passes_explicit_target_lufs_to_process_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+    ):
+        captured["loudness"] = loudness
+        return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
+
+    exit_code = cli.main([str(tmp_path / "input.wav"), "--auto-volume", "--target-lufs", "-14.0"])
+
+    loudness = captured["loudness"]
+    assert exit_code == 0
+    assert loudness.enabled is True
+    assert loudness.target_lufs == pytest.approx(-14.0)

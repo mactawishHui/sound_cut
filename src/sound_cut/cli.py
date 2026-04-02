@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from dataclasses import replace
 from pathlib import Path
 
 from sound_cut.core import SoundCutError, build_profile
+from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
 
 _SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav"}
 
@@ -17,6 +19,13 @@ def _non_negative_int(value: str) -> int:
     return parsed_value
 
 
+def _finite_float(value: str) -> float:
+    parsed_value = float(value)
+    if not math.isfinite(parsed_value):
+        raise argparse.ArgumentTypeError("must be a finite number")
+    return parsed_value
+
+
 def resolve_output_path(input_path: Path, output_path: Path | None) -> Path:
     if output_path is not None:
         return output_path
@@ -25,6 +34,14 @@ def resolve_output_path(input_path: Path, output_path: Path | None) -> Path:
     if suffix not in _SUPPORTED_DELIVERY_SUFFIXES:
         suffix = ".m4a"
     return input_path.with_name(f"{input_path.stem}.cut{suffix}")
+
+
+def _resolve_loudness_config(args: argparse.Namespace) -> LoudnessNormalizationConfig:
+    if args.target_lufs is not None and not args.auto_volume:
+        raise argparse.ArgumentTypeError("--target-lufs requires --auto-volume")
+
+    target_lufs = DEFAULT_TARGET_LUFS if args.target_lufs is None else args.target_lufs
+    return LoudnessNormalizationConfig(enabled=args.auto_volume, target_lufs=target_lufs)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,12 +56,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-silence-ms", type=_non_negative_int)
     parser.add_argument("--padding-ms", type=_non_negative_int)
     parser.add_argument("--crossfade-ms", type=_non_negative_int)
+    parser.add_argument("--auto-volume", action="store_true")
+    parser.add_argument("--target-lufs", type=_finite_float)
     parser.add_argument("--keep-temp", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        loudness = _resolve_loudness_config(args)
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
     profile = build_profile(args.aggressiveness)
     overrides = {
         "min_silence_ms": args.min_silence_ms,
@@ -57,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from sound_cut.editing.pipeline import process_audio
 
-        summary = process_audio(args.input, output_path, profile, keep_temp=args.keep_temp)
+        summary = process_audio(args.input, output_path, profile, keep_temp=args.keep_temp, loudness=loudness)
     except SoundCutError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Mapping
+
+DEFAULT_TARGET_LUFS = -16.0
 
 
 @dataclass(frozen=True, order=True)
@@ -42,6 +45,16 @@ class PauseSplitConfig:
 
 
 @dataclass(frozen=True)
+class LoudnessNormalizationConfig:
+    enabled: bool
+    target_lufs: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.target_lufs):
+            raise ValueError("target_lufs must be finite")
+
+
+@dataclass(frozen=True)
 class AnalysisTrack:
     name: str
     ranges: tuple[TimeRange, ...]
@@ -70,6 +83,9 @@ class RenderPlan:
     output_path: Path
     target: Literal["audio"]
     crossfade_ms: int
+    loudness: LoudnessNormalizationConfig = field(
+        default_factory=lambda: LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS)
+    )
 
 
 @dataclass(frozen=True)

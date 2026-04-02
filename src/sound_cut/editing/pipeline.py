@@ -7,7 +7,7 @@ from pathlib import Path
 from sound_cut.analysis.pause_splitter import refine_speech_ranges
 from sound_cut.core.config import CutProfile
 from sound_cut.core.errors import MediaError, NoSpeechDetectedError
-from sound_cut.core.models import RenderPlan, RenderSummary
+from sound_cut.core.models import LoudnessNormalizationConfig, RenderPlan, RenderSummary
 from sound_cut.editing.timeline import build_edit_decision_list
 from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media
 from sound_cut.media.render import render_audio_from_edl
@@ -33,6 +33,7 @@ def process_audio(
     profile: CutProfile,
     analyzer=None,
     keep_temp: bool = False,
+    loudness: LoudnessNormalizationConfig | None = None,
 ) -> RenderSummary:
     if input_path.resolve(strict=False) == output_path.resolve(strict=False):
         raise MediaError(f"Input and output paths must be different: {input_path}")
@@ -73,11 +74,17 @@ def process_audio(
         min_silence_ms=profile.min_silence_ms,
         merge_gap_ms=profile.merge_gap_ms,
     )
+    plan_kwargs = {
+        "source": source,
+        "edl": edl,
+        "output_path": output_path,
+        "target": "audio",
+        "crossfade_ms": profile.crossfade_ms,
+    }
+    if loudness is not None:
+        plan_kwargs["loudness"] = loudness
+
     plan = RenderPlan(
-        source=source,
-        edl=edl,
-        output_path=output_path,
-        target="audio",
-        crossfade_ms=profile.crossfade_ms,
+        **plan_kwargs,
     )
     return render_audio_from_edl(plan)

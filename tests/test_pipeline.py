@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from sound_cut.core import AnalysisTrack, MediaError, RenderSummary, TimeRange, build_profile
+from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
 from sound_cut.editing.pipeline import process_audio
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
@@ -179,3 +180,71 @@ def test_process_audio_rejects_in_place_output(tmp_path: Path, ffmpeg_available)
             profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
             analyzer=FakeSpeechAnalyzer((TimeRange(0.0, 0.5),)),
         )
+
+
+def test_process_audio_passes_loudness_config_into_render_plan(
+    tmp_path: Path, ffmpeg_available, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    captured: dict[str, object] = {}
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 0.5),))
+    loudness = LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0)
+
+    def fake_render_audio_from_edl(plan) -> RenderSummary:
+        captured["plan"] = plan
+        return RenderSummary(
+            input_duration_s=plan.source.duration_s,
+            output_duration_s=plan.source.duration_s,
+            removed_duration_s=0.0,
+            kept_segment_count=1,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_audio_from_edl", fake_render_audio_from_edl)
+
+    process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        analyzer=analyzer,
+        loudness=loudness,
+    )
+
+    assert captured["plan"].loudness == loudness
+
+
+def test_process_audio_defaults_loudness_config_when_omitted(
+    tmp_path: Path, ffmpeg_available, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    captured: dict[str, object] = {}
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 0.5),))
+
+    def fake_render_audio_from_edl(plan) -> RenderSummary:
+        captured["plan"] = plan
+        return RenderSummary(
+            input_duration_s=plan.source.duration_s,
+            output_duration_s=plan.source.duration_s,
+            removed_duration_s=0.0,
+            kept_segment_count=1,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_audio_from_edl", fake_render_audio_from_edl)
+
+    process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        analyzer=analyzer,
+    )
+
+    assert captured["plan"].loudness == LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_loudness_normalization_config_rejects_non_finite_target_lufs(value: float) -> None:
+    with pytest.raises(ValueError, match="target_lufs must be finite"):
+        LoudnessNormalizationConfig(enabled=True, target_lufs=value)
