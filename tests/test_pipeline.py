@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sound_cut.config import build_profile
-from sound_cut.errors import MediaError
-from sound_cut.models import AnalysisTrack, RenderSummary, TimeRange
-from sound_cut.pipeline import process_audio
+from sound_cut.core import AnalysisTrack, MediaError, RenderSummary, TimeRange, build_profile
+from sound_cut.editing.pipeline import process_audio
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 
@@ -91,7 +89,7 @@ def test_process_audio_refines_dense_profile_speech_ranges(
     analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 1.50),))
     profile = replace(build_profile("dense"), merge_gap_ms=0, min_silence_ms=150, padding_ms=0)
 
-    monkeypatch.setattr("sound_cut.pipeline.render_audio_from_edl", _fake_render_audio_from_edl)
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_audio_from_edl", _fake_render_audio_from_edl)
 
     summary = process_audio(
         input_path=input_path,
@@ -120,7 +118,7 @@ def test_process_audio_does_not_refine_balanced_profile_speech_ranges(
     analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 1.50),))
     profile = replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=150, padding_ms=0)
 
-    monkeypatch.setattr("sound_cut.pipeline.render_audio_from_edl", _fake_render_audio_from_edl)
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_audio_from_edl", _fake_render_audio_from_edl)
 
     summary = process_audio(
         input_path=input_path,

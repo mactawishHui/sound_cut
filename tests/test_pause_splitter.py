@@ -1,8 +1,7 @@
 from pathlib import Path
 
-from sound_cut.config import build_profile
-from sound_cut.models import PauseSplitConfig, TimeRange
-from sound_cut.pause_splitter import refine_speech_ranges
+from sound_cut.analysis.pause_splitter import refine_speech_ranges
+from sound_cut.core import PauseSplitConfig, TimeRange, build_profile
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 

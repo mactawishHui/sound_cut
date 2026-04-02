@@ -78,9 +78,13 @@ def test_main_passes_keep_temp_to_process_audio(monkeypatch: pytest.MonkeyPatch,
         captured["output_path"] = output_path
         captured["profile"] = profile
         captured["keep_temp"] = keep_temp
-        return importlib.import_module("sound_cut.models").RenderSummary(1.0, 0.5, 0.5, 1)
+        return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
 
-    monkeypatch.setitem(sys.modules, "sound_cut.pipeline", types.SimpleNamespace(process_audio=fake_process_audio))
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
 
     exit_code = cli.main([str(tmp_path / "input.wav"), "-o", str(tmp_path / "output.wav"), "--keep-temp"])
 
@@ -93,9 +97,13 @@ def test_main_infers_output_path_when_omitted(monkeypatch: pytest.MonkeyPatch, t
 
     def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
         captured["output_path"] = output_path
-        return importlib.import_module("sound_cut.models").RenderSummary(1.0, 0.5, 0.5, 1)
+        return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
 
-    monkeypatch.setitem(sys.modules, "sound_cut.pipeline", types.SimpleNamespace(process_audio=fake_process_audio))
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
 
     exit_code = cli.main([str(tmp_path / "input.mp3")])
 
@@ -105,9 +113,13 @@ def test_main_infers_output_path_when_omitted(monkeypatch: pytest.MonkeyPatch, t
 
 def test_main_prints_summary_for_successful_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     def fake_process_audio(input_path: Path, output_path: Path, profile, analyzer=None, keep_temp: bool = False):
-        return importlib.import_module("sound_cut.models").RenderSummary(12.3456, 7.89, 4.4556, 3)
+        return importlib.import_module("sound_cut.core").RenderSummary(12.3456, 7.89, 4.4556, 3)
 
-    monkeypatch.setitem(sys.modules, "sound_cut.pipeline", types.SimpleNamespace(process_audio=fake_process_audio))
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
 
     exit_code = cli.main([str(tmp_path / "input.wav"), "-o", str(tmp_path / "output.wav")])
 
@@ -126,7 +138,7 @@ def test_cli_module_import_does_not_require_pipeline(monkeypatch: pytest.MonkeyP
     original_import = builtins.__import__
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "sound_cut.pipeline":
+        if name == "sound_cut.editing.pipeline":
             raise AssertionError("pipeline import should not happen during cli module import")
         return original_import(name, globals, locals, fromlist, level)
 

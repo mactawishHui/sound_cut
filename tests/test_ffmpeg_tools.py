@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import sound_cut.ffmpeg_tools as ffmpeg_tools
-from sound_cut.errors import MediaError
-from sound_cut.ffmpeg_tools import (
+import sound_cut.media.ffmpeg_tools as ffmpeg_tools
+from sound_cut.core import MediaError, SourceMedia
+from sound_cut.media.ffmpeg_tools import (
     delivery_codec_for_suffix,
     export_delivery_audio,
     normalize_audio_for_analysis,
@@ -16,7 +16,6 @@ from sound_cut.ffmpeg_tools import (
     probe_source_media,
     resolve_delivery_bitrate_bps,
 )
-from sound_cut.models import SourceMedia
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 

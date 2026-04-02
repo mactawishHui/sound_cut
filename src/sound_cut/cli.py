@@ -5,8 +5,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from sound_cut.config import build_profile
-from sound_cut.errors import SoundCutError
+from sound_cut.core import SoundCutError, build_profile
 
 _SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav"}
 
@@ -56,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = resolve_output_path(args.input, args.output)
 
     try:
-        from sound_cut.pipeline import process_audio
+        from sound_cut.editing.pipeline import process_audio
 
         summary = process_audio(args.input, output_path, profile, keep_temp=args.keep_temp)
     except SoundCutError as exc:

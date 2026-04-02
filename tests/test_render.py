@@ -7,9 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from sound_cut.ffmpeg_tools import export_delivery_audio, probe_source_media
-from sound_cut.models import EditDecisionList, EditOperation, RenderPlan, SourceMedia, TimeRange
-from sound_cut.render import render_audio_from_edl
+from sound_cut.core import EditDecisionList, EditOperation, RenderPlan, SourceMedia, TimeRange
+from sound_cut.media import export_delivery_audio, probe_source_media, render_audio_from_edl
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 
@@ -207,13 +206,13 @@ def test_render_audio_from_edl_passes_source_media_to_delivery_export(monkeypatc
     recorded_calls: list[tuple[object, object, object]] = []
 
     monkeypatch.setattr(
-        "sound_cut.render.export_delivery_audio",
+        "sound_cut.media.render.export_delivery_audio",
         lambda source_wav, delivered_path, received_source: recorded_calls.append(
             (source_wav, delivered_path, received_source)
         ),
     )
     monkeypatch.setattr(
-        "sound_cut.render.probe_source_media",
+        "sound_cut.media.render.probe_source_media",
         lambda path: SimpleNamespace(duration_s=source.duration_s),
     )
 

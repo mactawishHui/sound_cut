@@ -1,14 +1,4 @@
-class SoundCutError(Exception):
-    """Base exception for expected CLI-facing failures."""
+from importlib import import_module as _import_module
+import sys as _sys
 
-
-class DependencyError(SoundCutError):
-    """Raised when ffmpeg or ffprobe is unavailable."""
-
-
-class MediaError(SoundCutError):
-    """Raised when input media cannot be read or written."""
-
-
-class NoSpeechDetectedError(SoundCutError):
-    """Raised when the analyzer finds no usable speech."""
+_sys.modules[__name__] = _import_module("sound_cut.core.errors")

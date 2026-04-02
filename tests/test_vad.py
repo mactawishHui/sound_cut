@@ -2,17 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from sound_cut.errors import MediaError
-from sound_cut.models import AnalysisTrack, TimeRange
-from sound_cut import vad as vad_module
-from sound_cut.vad import (
+import sound_cut.analysis.vad as vad_module
+from sound_cut.analysis.vad import (
     WebRtcSpeechAnalyzer,
     collect_speech_ranges,
     collapse_speech_flags,
     frame_duration_bytes,
     split_frames,
 )
-
+from sound_cut.core import AnalysisTrack, MediaError, TimeRange
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 

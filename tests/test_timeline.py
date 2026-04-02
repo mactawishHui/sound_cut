@@ -1,8 +1,7 @@
 import pytest
 
-from sound_cut.config import build_profile
-from sound_cut.models import AnalysisTrack, EditOperation, TimeRange
-from sound_cut.timeline import build_edit_decision_list, kept_ranges, source_to_output_time
+from sound_cut.core import AnalysisTrack, EditOperation, TimeRange, build_profile
+from sound_cut.editing.timeline import build_edit_decision_list, kept_ranges, source_to_output_time
 
 
 def test_build_edit_decision_list_keeps_short_pause_and_drops_long_pause() -> None:
