@@ -53,11 +53,13 @@ python3.11 -m pip install -e .[dev]
 
 ## 常用选项
 
-- `--aggressiveness {natural,balanced,dense}`:控制去除停顿的力度。默认值为 `balanced`。
-- `--min-silence-ms N`:覆盖可去除的最小静音长度。
-- `--padding-ms N`:保留检测到的语音边界周围的额外音频。
-- `--crossfade-ms N`:在剪辑边界处应用短淡入淡出效果。
-- `--keep-temp`:保留中间分析音频以进行调试。
+- `--aggressiveness {natural,balanced,dense}`：控制去除停顿的力度。默认值为 `balanced`。
+- `--min-silence-ms N`：覆盖可去除的最小静音长度。
+- `--padding-ms N`：保留检测到的语音边界周围的额外音频。
+- `--crossfade-ms N`：在剪辑边界处应用短淡入淡出效果。
+- `--auto-volume`：为最终输出启用响度归一化。该功能默认关闭，必须显式开启。
+- `--target-lufs N`：在启用 `--auto-volume` 时设置目标响度。默认值为 `-16.0`。
+- `--keep-temp`：保留中间分析音频以进行调试。
 
 ## 示例
 
@@ -65,11 +67,33 @@ python3.11 -m pip install -e .[dev]
 
 ```bash
 python3.11 -m sound_cut podcast.mp3 \
--o podcast.cut.mp3 \
---aggressiveness dense \
---min-silence-ms 140 \
---padding-ms 40 \
---crossfade-ms 5
+  -o podcast.cut.mp3 \
+  --aggressiveness dense \
+  --min-silence-ms 140 \
+  --padding-ms 40 \
+  --crossfade-ms 5
+```
+
+在同一条命令里同时剪掉停顿并做响度归一化：
+
+```bash
+python3.11 -m sound_cut podcast.mp3 \
+  -o podcast.cut.mp3 \
+  --aggressiveness dense \
+  --min-silence-ms 140 \
+  --padding-ms 40 \
+  --crossfade-ms 5 \
+  --auto-volume \
+  --target-lufs -14.0
+```
+
+如果省略 `--target-lufs`，`--auto-volume` 会使用默认目标 `-16.0`：
+
+```bash
+python3.11 -m sound_cut interview.wav \
+  --aggressiveness balanced \
+  --min-silence-ms 180 \
+  --auto-volume
 ```
 
 ## 命令行输出

@@ -65,6 +65,10 @@ For compressed outputs like `mp3` and `m4a`, delivery bitrate is chosen adaptive
   Keep extra audio around detected speech boundaries.
 - `--crossfade-ms N`
   Apply short fades at cut boundaries.
+- `--auto-volume`
+  Enable loudness normalization on the final output. This is opt-in and disabled by default.
+- `--target-lufs N`
+  Set the normalization target when `--auto-volume` is enabled. Default is `-16.0`.
 - `--keep-temp`
   Keep intermediate analysis audio for debugging.
 
@@ -79,6 +83,28 @@ python3.11 -m sound_cut podcast.mp3 \
   --min-silence-ms 140 \
   --padding-ms 40 \
   --crossfade-ms 5
+```
+
+Trim pauses and normalize loudness in the same command:
+
+```bash
+python3.11 -m sound_cut podcast.mp3 \
+  -o podcast.cut.mp3 \
+  --aggressiveness dense \
+  --min-silence-ms 140 \
+  --padding-ms 40 \
+  --crossfade-ms 5 \
+  --auto-volume \
+  --target-lufs -14.0
+```
+
+If you omit `--target-lufs`, `--auto-volume` uses the default target of `-16.0`:
+
+```bash
+python3.11 -m sound_cut interview.wav \
+  --aggressiveness balanced \
+  --min-silence-ms 180 \
+  --auto-volume
 ```
 
 ## CLI Output

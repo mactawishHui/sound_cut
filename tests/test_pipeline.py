@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+import math
+import re
+import struct
+import subprocess
 import wave
 from pathlib import Path
 
@@ -39,6 +44,46 @@ def _fake_render_audio_from_edl(plan) -> RenderSummary:
 def _wave_duration_s(path: Path) -> float:
     with wave.open(str(path), "rb") as handle:
         return handle.getnframes() / handle.getframerate()
+
+
+def _window_rms(path: Path, *, start_s: float, duration_s: float, channel_index: int = 0) -> float:
+    with wave.open(str(path), "rb") as handle:
+        sample_rate_hz = handle.getframerate()
+        channels = handle.getnchannels()
+        start_frame = int(start_s * sample_rate_hz)
+        frame_count = int(duration_s * sample_rate_hz)
+        handle.setpos(start_frame)
+        raw = handle.readframes(frame_count)
+
+    samples = struct.unpack("<" + "h" * (len(raw) // 2), raw)
+    channel_samples = samples[channel_index::channels]
+    return math.sqrt(sum(sample * sample for sample in channel_samples) / len(channel_samples))
+
+
+def _integrated_lufs(path: Path, *, target_lufs: float = -16.0) -> float:
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-af",
+            f"loudnorm=I={target_lufs}:print_format=json",
+            "-f",
+            "null",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"\{\s*\"input_i\".*?\}", completed.stderr, re.DOTALL)
+    if match is None:
+        raise AssertionError(f"Could not parse ffmpeg loudnorm output for {path}:\n{completed.stderr}")
+
+    stats = json.loads(match.group(0))
+    return float(stats["input_i"])
 
 
 def test_process_audio_writes_output_and_returns_summary(tmp_path: Path, ffmpeg_available) -> None:
@@ -212,6 +257,56 @@ def test_process_audio_passes_loudness_config_into_render_plan(
     )
 
     assert captured["plan"].loudness == loudness
+
+
+def test_process_audio_can_cut_and_normalize_in_one_command(tmp_path: Path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    raw_output_path = tmp_path / "raw.wav"
+    normalized_output_path = tmp_path / "normalized.wav"
+    sample_rate_hz = 48_000
+    target_lufs = -14.0
+    quiet_amplitude = 400
+    samples = [
+        sample
+        for mono_sample in (
+            tone_samples(sample_rate_hz=sample_rate_hz, duration_s=1.20, amplitude=quiet_amplitude)
+            + silence_samples(sample_rate_hz=sample_rate_hz, duration_s=0.40)
+            + tone_samples(sample_rate_hz=sample_rate_hz, duration_s=1.20, amplitude=quiet_amplitude)
+        )
+        for sample in (mono_sample, mono_sample)
+    ]
+    write_pcm_wave(input_path, sample_rate_hz=sample_rate_hz, samples=samples, channels=2)
+    profile = replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0, crossfade_ms=0)
+    speech_ranges = (TimeRange(0.0, 1.2), TimeRange(1.6, 2.8))
+
+    raw_summary = process_audio(
+        input_path=input_path,
+        output_path=raw_output_path,
+        profile=profile,
+        analyzer=FakeSpeechAnalyzer(speech_ranges),
+    )
+    normalized_summary = process_audio(
+        input_path=input_path,
+        output_path=normalized_output_path,
+        profile=profile,
+        analyzer=FakeSpeechAnalyzer(speech_ranges),
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=target_lufs),
+    )
+
+    raw_rms = _window_rms(raw_output_path, start_s=0.1, duration_s=0.5)
+    normalized_rms = _window_rms(normalized_output_path, start_s=0.1, duration_s=0.5)
+    raw_lufs = _integrated_lufs(raw_output_path, target_lufs=target_lufs)
+    normalized_lufs = _integrated_lufs(normalized_output_path, target_lufs=target_lufs)
+
+    assert raw_summary.input_duration_s == pytest.approx(2.8, abs=1e-9)
+    assert raw_summary.kept_segment_count == 2
+    assert raw_summary.output_duration_s < raw_summary.input_duration_s
+    assert raw_summary.output_duration_s == pytest.approx(2.4, abs=0.01)
+    assert normalized_summary.kept_segment_count == 2
+    assert normalized_summary.output_duration_s == pytest.approx(raw_summary.output_duration_s, abs=0.01)
+    assert normalized_rms > raw_rms * 2
+    assert normalized_lufs == pytest.approx(target_lufs, abs=1.0)
+    assert abs(normalized_lufs - target_lufs) < abs(raw_lufs - target_lufs)
 
 
 def test_process_audio_defaults_loudness_config_when_omitted(
