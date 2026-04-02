@@ -11,6 +11,7 @@ from sound_cut.core import MediaError, SourceMedia
 from sound_cut.media.ffmpeg_tools import (
     delivery_codec_for_suffix,
     export_delivery_audio,
+    normalize_loudness,
     normalize_audio_for_analysis,
     _parse_source_media,
     probe_source_media,
@@ -223,6 +224,90 @@ def test_normalize_audio_for_analysis_explicitly_forces_wav_pcm16(monkeypatch, t
     assert "wav" in recorded_command
     assert "-c:a" in recorded_command
     assert "pcm_s16le" in recorded_command
+
+
+def test_normalize_loudness_builds_loudnorm_pcm_wave_command(monkeypatch, tmp_path) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "normalized.wav"
+    recorded_command: list[str] = []
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=48_000,
+        samples=[
+            sample
+            for mono_sample in tone_samples(sample_rate_hz=48_000, duration_s=0.25, amplitude=1200)
+            for sample in (mono_sample, mono_sample)
+        ],
+        channels=2,
+    )
+
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "probe_source_media",
+        lambda path: SourceMedia(
+            input_path=path,
+            duration_s=0.25,
+            audio_codec="pcm_s16le",
+            sample_rate_hz=48_000,
+            channels=2,
+            has_video=False,
+        ),
+    )
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "_run",
+        lambda command: recorded_command.extend(command),
+    )
+
+    normalize_loudness(input_path, output_path, target_lufs=-14.0)
+
+    assert recorded_command[0] == "ffmpeg"
+    assert "-af" in recorded_command
+    assert "loudnorm=I=-14.0" in recorded_command
+    assert "-c:a" in recorded_command
+    assert "pcm_s16le" in recorded_command
+    assert "-ar" in recorded_command
+    assert "48000" in recorded_command
+    assert "-ac" in recorded_command
+    assert "2" in recorded_command
+    assert "-f" in recorded_command
+    assert "wav" in recorded_command
+
+
+def test_normalize_loudness_preserves_rate_and_channels_when_wave_module_cannot_read_input(
+    monkeypatch, tmp_path
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "normalized.wav"
+    recorded_command: list[str] = []
+    input_path.write_bytes(b"riff")
+
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "probe_source_media",
+        lambda path: SourceMedia(
+            input_path=path,
+            duration_s=1.0,
+            audio_codec="pcm_s16le",
+            sample_rate_hz=96_000,
+            channels=6,
+            has_video=False,
+        ),
+    )
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "_run",
+        lambda command: recorded_command.extend(command),
+    )
+
+    normalize_loudness(input_path, output_path, target_lufs=-14.0)
+
+    assert "-ar" in recorded_command
+    assert "96000" in recorded_command
+    assert "-ac" in recorded_command
+    assert "6" in recorded_command
 
 
 def test_probe_source_media_wraps_malformed_json_as_media_error(monkeypatch, tmp_path) -> None:

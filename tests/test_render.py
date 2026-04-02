@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from sound_cut.core import EditDecisionList, EditOperation, RenderPlan, SourceMedia, TimeRange
+from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
 from sound_cut.media import export_delivery_audio, probe_source_media, render_audio_from_edl
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
@@ -219,6 +220,182 @@ def test_render_audio_from_edl_passes_source_media_to_delivery_export(monkeypatc
     render_audio_from_edl(plan)
 
     assert recorded_calls and recorded_calls[0][2] is source
+
+
+def test_render_audio_from_edl_normalizes_internal_wave_before_delivery(monkeypatch, tmp_path) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    internal_waves: list[object] = []
+    normalized_calls: list[tuple[object, object, float]] = []
+    exported_inputs: list[object] = []
+
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=1.0,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=16_000,
+        channels=1,
+        has_video=False,
+    )
+    plan = RenderPlan(
+        source=source,
+        edl=EditDecisionList(operations=(EditOperation("keep", TimeRange(0.0, 1.0), "speech"),)),
+        output_path=output_path,
+        target="audio",
+        crossfade_ms=10,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+
+    def fake_render_internal_wave(received_plan, rendered_path, *, force_nonempty=False) -> int:
+        assert received_plan is plan
+        assert force_nonempty is False
+        internal_waves.append(rendered_path)
+        write_pcm_wave(
+            rendered_path,
+            sample_rate_hz=16_000,
+            samples=tone_samples(sample_rate_hz=16_000, duration_s=1.0, amplitude=1200),
+        )
+        return 1
+
+    def fake_normalize_loudness(source_wav, normalized_wav, *, target_lufs: float) -> None:
+        normalized_calls.append((source_wav, normalized_wav, target_lufs))
+        write_pcm_wave(
+            normalized_wav,
+            sample_rate_hz=16_000,
+            samples=tone_samples(sample_rate_hz=16_000, duration_s=1.0, amplitude=3000),
+        )
+
+    def fake_export_delivery_audio(source_wav, delivered_path, received_source) -> None:
+        exported_inputs.append(source_wav)
+        write_pcm_wave(
+            delivered_path,
+            sample_rate_hz=16_000,
+            samples=tone_samples(sample_rate_hz=16_000, duration_s=1.0, amplitude=3000),
+        )
+
+    monkeypatch.setattr("sound_cut.media.render._render_internal_wave", fake_render_internal_wave)
+    monkeypatch.setattr("sound_cut.media.render.normalize_loudness", fake_normalize_loudness)
+    monkeypatch.setattr("sound_cut.media.render.export_delivery_audio", fake_export_delivery_audio)
+
+    render_audio_from_edl(plan)
+
+    assert len(internal_waves) == 1
+    assert len(normalized_calls) == 1
+    assert normalized_calls[0][0] == internal_waves[0]
+    assert normalized_calls[0][1].name == "normalized.wav"
+    assert normalized_calls[0][2] == -14.0
+    assert exported_inputs == [normalized_calls[0][1]]
+
+
+def test_render_audio_from_edl_falls_back_to_probe_duration_for_multichannel_wav_output(
+    monkeypatch, tmp_path, ffmpeg_available
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    sample_rate_hz = 48_000
+    keep_duration_s = 0.75
+    mono_samples = tone_samples(sample_rate_hz=sample_rate_hz, duration_s=keep_duration_s, amplitude=1500)
+    six_channel_samples = [sample for mono_sample in mono_samples for sample in (mono_sample,) * 6]
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=sample_rate_hz,
+        samples=six_channel_samples,
+        channels=6,
+    )
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=keep_duration_s,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=sample_rate_hz,
+        channels=6,
+        has_video=False,
+    )
+    plan = RenderPlan(
+        source=source,
+        edl=EditDecisionList(operations=(EditOperation("keep", TimeRange(0.0, keep_duration_s), "speech"),)),
+        output_path=output_path,
+        target="audio",
+        crossfade_ms=0,
+    )
+
+    real_wave_open = wave.open
+
+    def failing_wave_open(path, mode="rb"):
+        if str(path) == str(output_path) and mode == "rb":
+            raise wave.Error("unsupported extensible wav")
+        return real_wave_open(path, mode)
+
+    monkeypatch.setattr("sound_cut.media.render.wave.open", failing_wave_open)
+
+    summary = render_audio_from_edl(plan)
+    output_media = probe_source_media(output_path)
+
+    assert output_media.channels == 6
+    assert summary.output_duration_s == pytest.approx(keep_duration_s, abs=1e-6)
+    assert summary.output_duration_s == pytest.approx(output_media.duration_s, abs=1e-6)
+    assert summary.kept_segment_count == 1
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=1e-9)
+
+
+def test_render_audio_from_edl_auto_volume_increases_low_level_output(tmp_path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    raw_output_path = tmp_path / "raw.wav"
+    normalized_output_path = tmp_path / "normalized.wav"
+    sample_rate_hz = 48_000
+    duration_s = 2.0
+    quiet_amplitude = 400
+    edl = EditDecisionList(operations=(EditOperation("keep", TimeRange(0.0, duration_s), "speech"),))
+    stereo_samples = [
+        sample
+        for mono_sample in tone_samples(sample_rate_hz=sample_rate_hz, duration_s=duration_s, amplitude=quiet_amplitude)
+        for sample in (mono_sample, mono_sample)
+    ]
+
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=sample_rate_hz,
+        samples=stereo_samples,
+        channels=2,
+    )
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=duration_s,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=sample_rate_hz,
+        channels=2,
+        has_video=False,
+    )
+
+    raw_summary = render_audio_from_edl(
+        RenderPlan(
+            source=source,
+            edl=edl,
+            output_path=raw_output_path,
+            target="audio",
+            crossfade_ms=0,
+            loudness=LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS),
+        )
+    )
+    normalized_summary = render_audio_from_edl(
+        RenderPlan(
+            source=source,
+            edl=edl,
+            output_path=normalized_output_path,
+            target="audio",
+            crossfade_ms=0,
+            loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+        )
+    )
+
+    raw_rms = _window_rms(raw_output_path, start_s=0.25, duration_s=1.0)
+    normalized_rms = _window_rms(normalized_output_path, start_s=0.25, duration_s=1.0)
+
+    assert raw_summary.output_duration_s == pytest.approx(duration_s, abs=1e-9)
+    assert normalized_summary.output_duration_s == pytest.approx(duration_s, abs=1e-9)
+    with wave.open(str(normalized_output_path), "rb") as handle:
+        assert handle.getframerate() == sample_rate_hz
+        assert handle.getnchannels() == 2
+    assert normalized_rms > raw_rms * 2
 
 
 def test_render_audio_from_edl_preserves_submillisecond_boundaries(tmp_path, ffmpeg_available) -> None:

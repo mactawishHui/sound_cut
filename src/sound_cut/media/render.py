@@ -7,7 +7,13 @@ from pathlib import Path
 
 from sound_cut.core.models import RenderPlan, RenderSummary
 from sound_cut.editing.timeline import kept_ranges
-from sound_cut.media.ffmpeg_tools import _require_binary, _run, export_delivery_audio, probe_source_media
+from sound_cut.media.ffmpeg_tools import (
+    _require_binary,
+    _run,
+    export_delivery_audio,
+    normalize_loudness,
+    probe_source_media,
+)
 
 
 def _format_seconds(value: float) -> str:
@@ -29,9 +35,12 @@ def _write_tiny_silent_wave(path: Path, *, sample_rate_hz: int, channels: int, f
         handle.writeframes(b"\x00\x00" * frames * channels)
 
 
-def _wave_duration_s(path: Path) -> float:
-    with wave.open(str(path), "rb") as handle:
-        return handle.getnframes() / handle.getframerate()
+def _resolve_wav_duration_s(path: Path) -> float:
+    try:
+        with wave.open(str(path), "rb") as handle:
+            return handle.getnframes() / handle.getframerate()
+    except (OSError, EOFError, wave.Error):
+        return probe_source_media(path).duration_s
 
 
 def _render_internal_wave(plan: RenderPlan, output_path: Path, *, force_nonempty: bool = False) -> int:
@@ -149,12 +158,20 @@ def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
             internal_output_path,
             force_nonempty=force_nonempty,
         )
-        export_delivery_audio(internal_output_path, output_path, plan.source)
+        delivery_input_path = internal_output_path
+        if plan.loudness.enabled and kept_segment_count > 0:
+            delivery_input_path = temp_dir / "normalized.wav"
+            normalize_loudness(
+                internal_output_path,
+                delivery_input_path,
+                target_lufs=plan.loudness.target_lufs,
+            )
+        export_delivery_audio(delivery_input_path, output_path, plan.source)
 
     if kept_segment_count == 0 and delivery_suffix == ".wav":
         output_duration_s = 0.0
     elif delivery_suffix == ".wav":
-        output_duration_s = _wave_duration_s(output_path)
+        output_duration_s = _resolve_wav_duration_s(output_path)
     else:
         output_duration_s = probe_source_media(output_path).duration_s
     return RenderSummary(

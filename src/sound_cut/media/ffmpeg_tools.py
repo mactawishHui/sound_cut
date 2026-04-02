@@ -115,6 +115,48 @@ def normalize_audio_for_analysis(input_path: Path, output_path: Path, *, sample_
     )
 
 
+def normalize_loudness(source_wav: Path, output_wav: Path, *, target_lufs: float) -> None:
+    ffmpeg = _require_binary("ffmpeg")
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    sample_rate_hz: int | None = None
+    channels: int | None = None
+    try:
+        source_media = probe_source_media(source_wav)
+        sample_rate_hz = source_media.sample_rate_hz
+        channels = source_media.channels
+    except (DependencyError, MediaError):
+        pass
+
+    command = [
+        ffmpeg,
+        "-y",
+        "-nostats",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_wav),
+        "-vn",
+        "-af",
+        f"loudnorm=I={target_lufs}",
+        "-c:a",
+        "pcm_s16le",
+    ]
+    if sample_rate_hz is not None:
+        command.extend(["-ar", str(sample_rate_hz)])
+    if channels is not None:
+        command.extend(["-ac", str(channels)])
+    command.extend(
+        [
+            "-f",
+            "wav",
+            str(output_wav),
+        ]
+    )
+    _run(
+        command
+    )
+
+
 def delivery_codec_for_suffix(suffix: str) -> tuple[str, str | None]:
     mapping = {
         ".mp3": ("libmp3lame", "128k"),
