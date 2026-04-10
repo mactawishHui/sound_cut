@@ -6,10 +6,61 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from sound_cut.core import SoundCutError, build_profile
+from sound_cut.core import EnhancementConfig, SoundCutError, build_profile
 from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
+from sound_cut.models.installer import import_model, install_model, model_install_state, verify_model
+from sound_cut.models.locator import locate_model_dir
+from sound_cut.models.registry import MODEL_REGISTRY
 
-_SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav"}
+_SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav", ".mp4"}
+_MODEL_COMMANDS = {"list", "install", "import", "verify"}
+_PROCESSING_MODE_FLAGS = {"--cut", "--auto-volume", "--enhance-speech"}
+
+
+class _SoundCutArgumentParser(argparse.ArgumentParser):
+    def __init__(self) -> None:
+        super().__init__(prog="sound-cut")
+        self._models_parser = _build_models_parser()
+        self.add_argument("input", type=Path)
+        self.add_argument("-o", "--output", type=Path)
+        self.add_argument(
+            "--aggressiveness",
+            choices=("natural", "balanced", "dense"),
+            default="balanced",
+        )
+        self.add_argument("--min-silence-ms", type=_non_negative_int)
+        self.add_argument("--padding-ms", type=_non_negative_int)
+        self.add_argument("--crossfade-ms", type=_non_negative_int)
+        self.add_argument("--cut", action="store_true")
+        self.add_argument("--auto-volume", action="store_true")
+        self.add_argument("--target-lufs", type=_finite_float)
+        self.add_argument("--keep-temp", action="store_true")
+        self.add_argument("--enhance-speech", action="store_true")
+        self.add_argument(
+            "--enhancer-backend",
+            choices=("deepfilternet3", "resemble-enhance"),
+            default="deepfilternet3",
+        )
+        self.add_argument("--enhancer-profile", choices=("natural", "strong"), default="natural")
+        self.add_argument("--model-path", type=Path)
+
+    def parse_args(self, args=None, namespace=None):
+        argv = sys.argv[1:] if args is None else list(args)
+        if argv and argv[0] == "models":
+            # Preserve the ability to process an input file literally named "models"
+            # when explicit processing-mode flags are present.
+            processing_mode_selected = any(flag in argv[1:] for flag in _PROCESSING_MODE_FLAGS)
+            if not processing_mode_selected:
+                return self._models_parser.parse_args(argv[1:], namespace)
+
+        parsed_args = super().parse_args(argv, namespace)
+        if not parsed_args.cut and not parsed_args.auto_volume and not parsed_args.enhance_speech:
+            self.error(
+                "at least one processing mode is required: --cut, --auto-volume, and/or --enhance-speech"
+            )
+        if parsed_args.target_lufs is not None and not parsed_args.auto_volume:
+            self.error("--target-lufs requires --auto-volume")
+        return parsed_args
 
 
 def _non_negative_int(value: str) -> int:
@@ -44,29 +95,95 @@ def _resolve_loudness_config(args: argparse.Namespace) -> LoudnessNormalizationC
     return LoudnessNormalizationConfig(enabled=args.auto_volume, target_lufs=target_lufs)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="sound-cut")
-    parser.add_argument("input", type=Path)
-    parser.add_argument("-o", "--output", type=Path)
-    parser.add_argument(
-        "--aggressiveness",
-        choices=("natural", "balanced", "dense"),
-        default="balanced",
+def _resolve_enhancement_config(args: argparse.Namespace) -> EnhancementConfig:
+    return EnhancementConfig(
+        enabled=args.enhance_speech,
+        backend=args.enhancer_backend,
+        profile=args.enhancer_profile,
+        model_path=args.model_path,
     )
-    parser.add_argument("--min-silence-ms", type=_non_negative_int)
-    parser.add_argument("--padding-ms", type=_non_negative_int)
-    parser.add_argument("--crossfade-ms", type=_non_negative_int)
-    parser.add_argument("--auto-volume", action="store_true")
-    parser.add_argument("--target-lufs", type=_finite_float)
-    parser.add_argument("--keep-temp", action="store_true")
+
+
+def _build_models_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="sound-cut models")
+    parser.set_defaults(command="models")
+    subparsers = parser.add_subparsers(dest="models_command", required=True)
+
+    list_parser = subparsers.add_parser("list")
+    list_parser.set_defaults(models_command="list")
+
+    install_parser = subparsers.add_parser("install")
+    install_parser.add_argument("backend", choices=tuple(MODEL_REGISTRY))
+    install_parser.add_argument("--destination", type=Path)
+    install_parser.set_defaults(models_command="install")
+
+    import_parser = subparsers.add_parser("import")
+    import_parser.add_argument("backend", choices=tuple(MODEL_REGISTRY))
+    import_parser.add_argument("source", type=Path)
+    import_parser.add_argument("--destination", type=Path)
+    import_parser.set_defaults(models_command="import")
+
+    verify_parser = subparsers.add_parser("verify")
+    verify_parser.add_argument("backend", choices=tuple(MODEL_REGISTRY))
+    verify_parser.add_argument("model_dir", nargs="?", type=Path)
+    verify_parser.set_defaults(models_command="verify")
+
     return parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    return _SoundCutArgumentParser()
+
+
+def _run_models_command(args: argparse.Namespace) -> int:
+    if args.models_command == "list":
+        status_labels = {
+            "missing": "not installed",
+            "prepared": "prepared",
+            "installed": "installed",
+            "invalid": "invalid",
+        }
+        for backend in MODEL_REGISTRY:
+            model_dir = locate_model_dir(backend)
+            status = model_install_state(backend, model_dir)
+            print(f"{backend}\t{status_labels.get(status, status)}\t{model_dir}")
+        return 0
+
+    try:
+        if args.models_command == "install":
+            installed_path = install_model(args.backend, args.destination)
+            print(installed_path)
+            return 0
+
+        if args.models_command == "import":
+            imported_path = import_model(args.backend, args.source, args.destination)
+            print(imported_path)
+            return 0
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.models_command == "verify":
+        model_dir = args.model_dir or locate_model_dir(args.backend)
+        if verify_model(args.backend, model_dir):
+            print(f"verified {args.backend} {model_dir}")
+            return 0
+        print(f"missing {args.backend} {model_dir}", file=sys.stderr)
+        return 1
+
+    raise ValueError(f"unsupported models command: {args.models_command}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if getattr(args, "command", None) == "models":
+        return _run_models_command(args)
+
     try:
         loudness = _resolve_loudness_config(args)
+        enhancement = _resolve_enhancement_config(args)
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
     profile = build_profile(args.aggressiveness)
@@ -81,7 +198,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from sound_cut.editing.pipeline import process_audio
 
-        summary = process_audio(args.input, output_path, profile, keep_temp=args.keep_temp, loudness=loudness)
+        summary = process_audio(
+            args.input,
+            output_path,
+            profile,
+            keep_temp=args.keep_temp,
+            loudness=loudness,
+            enable_cut=args.cut,
+            enhancement=enhancement,
+        )
     except SoundCutError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

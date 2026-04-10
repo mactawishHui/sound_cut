@@ -101,7 +101,6 @@ def test_flat_module_cold_imports_work_in_fresh_interpreter() -> None:
 def test_flat_module_paths_alias_real_modules() -> None:
     assert importlib.import_module("sound_cut.config") is importlib.import_module("sound_cut.core.config")
     assert importlib.import_module("sound_cut.errors") is importlib.import_module("sound_cut.core.errors")
-    assert importlib.import_module("sound_cut.models") is importlib.import_module("sound_cut.core.models")
     assert importlib.import_module("sound_cut.vad") is importlib.import_module("sound_cut.analysis.vad")
     assert importlib.import_module("sound_cut.pause_splitter") is importlib.import_module(
         "sound_cut.analysis.pause_splitter"
@@ -112,6 +111,14 @@ def test_flat_module_paths_alias_real_modules() -> None:
         "sound_cut.media.ffmpeg_tools"
     )
     assert importlib.import_module("sound_cut.render") is importlib.import_module("sound_cut.media.render")
+
+
+def test_models_package_exposes_management_and_legacy_exports() -> None:
+    models_module = importlib.import_module("sound_cut.models")
+
+    assert models_module.locate_model_dir
+    assert models_module.MODEL_REGISTRY
+    assert models_module.RenderPlan is RenderPlan
 
 
 def test_flat_module_paths_preserve_old_entrypoints_and_private_helpers() -> None:

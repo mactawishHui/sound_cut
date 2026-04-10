@@ -7,6 +7,8 @@ from types import MappingProxyType
 from typing import Literal, Mapping
 
 DEFAULT_TARGET_LUFS = -16.0
+SUPPORTED_ENHANCEMENT_BACKENDS = ("deepfilternet3", "resemble-enhance")
+SUPPORTED_ENHANCEMENT_PROFILES = ("natural", "strong")
 
 
 @dataclass(frozen=True, order=True)
@@ -52,6 +54,22 @@ class LoudnessNormalizationConfig:
     def __post_init__(self) -> None:
         if not math.isfinite(self.target_lufs):
             raise ValueError("target_lufs must be finite")
+
+
+@dataclass(frozen=True)
+class EnhancementConfig:
+    enabled: bool
+    backend: str = "deepfilternet3"
+    profile: str = "natural"
+    model_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.model_path is not None and not isinstance(self.model_path, Path):
+            object.__setattr__(self, "model_path", Path(self.model_path))
+        if self.backend not in SUPPORTED_ENHANCEMENT_BACKENDS:
+            raise ValueError(f"backend must be one of {SUPPORTED_ENHANCEMENT_BACKENDS!r}")
+        if self.profile not in SUPPORTED_ENHANCEMENT_PROFILES:
+            raise ValueError(f"profile must be one of {SUPPORTED_ENHANCEMENT_PROFILES!r}")
 
 
 @dataclass(frozen=True)

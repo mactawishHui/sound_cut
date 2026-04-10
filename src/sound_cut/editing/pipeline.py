@@ -7,10 +7,24 @@ from pathlib import Path
 from sound_cut.analysis.pause_splitter import refine_speech_ranges
 from sound_cut.core.config import CutProfile
 from sound_cut.core.errors import MediaError, NoSpeechDetectedError
-from sound_cut.core.models import LoudnessNormalizationConfig, RenderPlan, RenderSummary
+from sound_cut.core.models import (
+    DEFAULT_TARGET_LUFS,
+    EnhancementConfig,
+    LoudnessNormalizationConfig,
+    RenderPlan,
+    RenderSummary,
+)
 from sound_cut.editing.timeline import build_edit_decision_list
+from sound_cut.enhancement.pipeline import enhance_audio
 from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media
-from sound_cut.media.render import render_audio_from_edl
+from sound_cut.media.render import (
+    render_audio_from_edl,
+    render_full_audio,
+    render_full_video,
+    render_video_from_edl,
+)
+
+_VIDEO_OUTPUT_SUFFIXES = {".mp4"}
 
 
 def _refine_analysis_ranges(normalized_path: Path, analysis, profile: CutProfile):
@@ -27,22 +41,13 @@ def _refine_analysis_ranges(normalized_path: Path, analysis, profile: CutProfile
     )
 
 
-def process_audio(
+def _analyze_audio(
     input_path: Path,
     output_path: Path,
     profile: CutProfile,
     analyzer=None,
     keep_temp: bool = False,
-    loudness: LoudnessNormalizationConfig | None = None,
-) -> RenderSummary:
-    if input_path.resolve(strict=False) == output_path.resolve(strict=False):
-        raise MediaError(f"Input and output paths must be different: {input_path}")
-
-    if not input_path.exists():
-        raise MediaError(f"Input media not found: {input_path}")
-
-    source = probe_source_media(input_path)
-
+) -> tuple[object, Path]:
     if keep_temp:
         normalized_path = output_path.with_name(f"{output_path.stem}.analysis.wav")
         normalized_path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,6 +69,49 @@ def process_audio(
             analysis = analyzer.analyze(normalized_path)
             analysis = _refine_analysis_ranges(normalized_path, analysis, profile)
 
+    return analysis, normalized_path
+
+
+def _process_cut_audio(
+    input_path: Path,
+    output_path: Path,
+    profile: CutProfile,
+    *,
+    source,
+    analyzer,
+    keep_temp: bool,
+    loudness: LoudnessNormalizationConfig,
+) -> RenderSummary:
+    plan = _build_cut_plan(
+        input_path=input_path,
+        output_path=output_path,
+        profile=profile,
+        source=source,
+        analyzer=analyzer,
+        keep_temp=keep_temp,
+        loudness=loudness,
+    )
+    return render_audio_from_edl(plan)
+
+
+def _build_cut_plan(
+    *,
+    input_path: Path,
+    output_path: Path,
+    profile: CutProfile,
+    source,
+    analyzer,
+    keep_temp: bool,
+    loudness: LoudnessNormalizationConfig,
+) -> RenderPlan:
+    analysis, _ = _analyze_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=profile,
+        analyzer=analyzer,
+        keep_temp=keep_temp,
+    )
+
     if not analysis.ranges:
         raise NoSpeechDetectedError(f"No speech detected in {input_path}")
 
@@ -74,17 +122,107 @@ def process_audio(
         min_silence_ms=profile.min_silence_ms,
         merge_gap_ms=profile.merge_gap_ms,
     )
-    plan_kwargs = {
-        "source": source,
-        "edl": edl,
-        "output_path": output_path,
-        "target": "audio",
-        "crossfade_ms": profile.crossfade_ms,
-    }
-    if loudness is not None:
-        plan_kwargs["loudness"] = loudness
-
-    plan = RenderPlan(
-        **plan_kwargs,
+    return RenderPlan(
+        source=source,
+        edl=edl,
+        output_path=output_path,
+        target="audio",
+        crossfade_ms=profile.crossfade_ms,
+        loudness=loudness,
     )
-    return render_audio_from_edl(plan)
+
+
+def _process_cut_video(
+    *,
+    input_path: Path,
+    output_path: Path,
+    profile: CutProfile,
+    video_source,
+    audio_source,
+    analyzer,
+    keep_temp: bool,
+    loudness: LoudnessNormalizationConfig,
+) -> RenderSummary:
+    audio_plan = _build_cut_plan(
+        input_path=input_path,
+        output_path=output_path,
+        profile=profile,
+        source=audio_source,
+        analyzer=analyzer,
+        keep_temp=keep_temp,
+        loudness=loudness,
+    )
+    return render_video_from_edl(video_source=video_source, audio_plan=audio_plan)
+
+
+def process_audio(
+    input_path: Path,
+    output_path: Path,
+    profile: CutProfile,
+    *,
+    enable_cut: bool = True,
+    analyzer=None,
+    keep_temp: bool = False,
+    loudness: LoudnessNormalizationConfig | None = None,
+    enhancement: EnhancementConfig | None = None,
+) -> RenderSummary:
+    if input_path.resolve(strict=False) == output_path.resolve(strict=False):
+        raise MediaError(f"Input and output paths must be different: {input_path}")
+
+    if not input_path.exists():
+        raise MediaError(f"Input media not found: {input_path}")
+
+    original_source = probe_source_media(input_path)
+    enhancement_config = enhancement
+    if enhancement_config is None:
+        enhancement_config = EnhancementConfig(enabled=False)
+
+    loudness_config = loudness
+    if loudness_config is None:
+        loudness_config = LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS)
+
+    with tempfile.TemporaryDirectory(prefix="sound-cut-enhance-") as temp_dir_name:
+        working_input_path = enhance_audio(
+            input_path=input_path,
+            enhancement=enhancement_config,
+            working_dir=Path(temp_dir_name),
+        )
+        processing_source = replace(original_source, input_path=working_input_path)
+        render_video_output = (
+            original_source.has_video and output_path.suffix.lower() in _VIDEO_OUTPUT_SUFFIXES
+        )
+
+        if enable_cut:
+            if render_video_output:
+                return _process_cut_video(
+                    input_path=working_input_path,
+                    output_path=output_path,
+                    profile=profile,
+                    video_source=original_source,
+                    audio_source=processing_source,
+                    analyzer=analyzer,
+                    keep_temp=keep_temp,
+                    loudness=loudness_config,
+                )
+            return _process_cut_audio(
+                input_path=working_input_path,
+                output_path=output_path,
+                profile=profile,
+                source=processing_source,
+                analyzer=analyzer,
+                keep_temp=keep_temp,
+                loudness=loudness_config,
+            )
+
+        if render_video_output:
+            return render_full_video(
+                video_source=original_source,
+                audio_source=processing_source,
+                output_path=output_path,
+                loudness=loudness_config,
+            )
+        return render_full_audio(
+            source=processing_source,
+            output_path=output_path,
+            loudness=loudness_config,
+        )

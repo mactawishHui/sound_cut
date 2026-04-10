@@ -4,12 +4,14 @@ import math
 import struct
 import wave
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
 from sound_cut.core import EditDecisionList, EditOperation, RenderPlan, SourceMedia, TimeRange
 from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
 from sound_cut.media import export_delivery_audio, probe_source_media, render_audio_from_edl
+from sound_cut.media.render import render_full_audio, render_full_video, render_video_from_edl
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 
@@ -287,6 +289,141 @@ def test_render_audio_from_edl_normalizes_internal_wave_before_delivery(monkeypa
     assert exported_inputs == [normalized_calls[0][1]]
 
 
+def test_render_full_audio_normalizes_full_source_before_delivery(monkeypatch, tmp_path: Path) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    internal_waves: list[Path] = []
+    normalized_calls: list[tuple[Path, Path, float]] = []
+    exported_inputs: list[Path] = []
+
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=1.0,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=48_000,
+        channels=1,
+        has_video=False,
+    )
+
+    def fake_render_full_internal_wave(received_source: SourceMedia, rendered_path: Path) -> None:
+        assert received_source is source
+        assert rendered_path.name == "render.wav"
+        assert received_source.input_path == input_path
+        internal_waves.append(rendered_path)
+        write_pcm_wave(
+            rendered_path,
+            sample_rate_hz=48_000,
+            samples=tone_samples(sample_rate_hz=48_000, duration_s=1.0, amplitude=1200),
+        )
+
+    def fake_normalize_loudness(source_wav: Path, normalized_wav: Path, *, target_lufs: float) -> None:
+        normalized_calls.append((source_wav, normalized_wav, target_lufs))
+        write_pcm_wave(
+            normalized_wav,
+            sample_rate_hz=48_000,
+            samples=tone_samples(sample_rate_hz=48_000, duration_s=1.0, amplitude=3000),
+        )
+
+    def fake_export_delivery_audio(source_wav: Path, delivered_path: Path, received_source: SourceMedia) -> None:
+        exported_inputs.append(source_wav)
+        write_pcm_wave(
+            delivered_path,
+            sample_rate_hz=48_000,
+            samples=tone_samples(sample_rate_hz=48_000, duration_s=1.0, amplitude=3000),
+        )
+
+    monkeypatch.setattr("sound_cut.media.render._render_full_internal_wave", fake_render_full_internal_wave)
+    monkeypatch.setattr("sound_cut.media.render.normalize_loudness", fake_normalize_loudness)
+    monkeypatch.setattr("sound_cut.media.render.export_delivery_audio", fake_export_delivery_audio)
+
+    summary = render_full_audio(
+        source=source,
+        output_path=output_path,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+
+    assert len(internal_waves) == 1
+    assert len(normalized_calls) == 1
+    assert normalized_calls[0][0] == internal_waves[0]
+    assert normalized_calls[0][1].name == "normalized.wav"
+    assert normalized_calls[0][2] == -14.0
+    assert exported_inputs == [normalized_calls[0][1]]
+    assert summary.output_duration_s == pytest.approx(1.0, abs=1e-9)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=1e-9)
+    assert summary.kept_segment_count == 1
+
+
+def test_process_audio_without_cut_preserves_stereo_output_channels(tmp_path: Path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    sample_rate_hz = 48_000
+    stereo_samples = [
+        sample
+        for mono_sample in tone_samples(sample_rate_hz=sample_rate_hz, duration_s=1.0, amplitude=400)
+        for sample in (mono_sample, mono_sample)
+    ]
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=sample_rate_hz,
+        samples=stereo_samples,
+        channels=2,
+    )
+
+    from sound_cut.core import build_profile
+    from sound_cut.editing.pipeline import process_audio
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=build_profile("balanced"),
+        enable_cut=False,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+    output_media = probe_source_media(output_path)
+
+    assert output_media.channels == 2
+    assert summary.output_duration_s == pytest.approx(1.0, abs=0.02)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=0.02)
+    assert summary.kept_segment_count == 1
+
+
+def test_process_audio_without_cut_can_export_normalized_mp3(tmp_path: Path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.mp3"
+    sample_rate_hz = 48_000
+    stereo_samples = [
+        sample
+        for mono_sample in tone_samples(sample_rate_hz=sample_rate_hz, duration_s=1.0, amplitude=400)
+        for sample in (mono_sample, mono_sample)
+    ]
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=sample_rate_hz,
+        samples=stereo_samples,
+        channels=2,
+    )
+
+    from sound_cut.core import build_profile
+    from sound_cut.editing.pipeline import process_audio
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=build_profile("balanced"),
+        enable_cut=False,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+    output_media = probe_source_media(output_path)
+
+    assert output_path.exists()
+    assert output_media.audio_codec == "mp3"
+    assert output_media.channels == 2
+    assert summary.output_duration_s == pytest.approx(output_media.duration_s, abs=1e-6)
+    assert summary.output_duration_s == pytest.approx(1.0, abs=0.05)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=0.05)
+    assert summary.kept_segment_count == 1
+
+
 def test_render_audio_from_edl_falls_back_to_probe_duration_for_multichannel_wav_output(
     monkeypatch, tmp_path, ffmpeg_available
 ) -> None:
@@ -544,3 +681,145 @@ def test_render_audio_from_edl_keeps_short_range_from_mp3_input(tmp_path, ffmpeg
 
     assert summary.output_duration_s == pytest.approx(keep_end_s - keep_start_s, abs=1e-3)
     assert _window_rms(output_path, start_s=0.0, duration_s=summary.output_duration_s) > 1000.0
+
+
+def test_render_full_video_replaces_audio_and_reuses_original_video_stream(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_input_path = tmp_path / "input.mp4"
+    output_path = tmp_path / "output.mp4"
+    video_input_path.write_bytes(b"video")
+    audio_input_path = tmp_path / "audio.wav"
+    audio_input_path.write_bytes(b"audio")
+    mux_calls: list[tuple[Path, Path, Path, bool]] = []
+
+    video_source = SourceMedia(
+        input_path=video_input_path,
+        duration_s=4.0,
+        audio_codec="aac",
+        sample_rate_hz=48_000,
+        channels=2,
+        has_video=True,
+    )
+    audio_source = SourceMedia(
+        input_path=audio_input_path,
+        duration_s=4.0,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=48_000,
+        channels=2,
+        has_video=False,
+    )
+
+    def fake_render_full_internal_wave(source: SourceMedia, rendered_path: Path) -> None:
+        assert source is audio_source
+        write_pcm_wave(
+            rendered_path,
+            sample_rate_hz=48_000,
+            samples=tone_samples(sample_rate_hz=48_000, duration_s=0.5),
+        )
+
+    def fake_export_delivery_audio(source_wav: Path, delivered_path: Path, source: SourceMedia) -> None:
+        delivered_path.write_bytes(source_wav.read_bytes())
+
+    def fake_mux_audio_with_video(
+        video_path: Path, audio_path: Path, output_path: Path, *, copy_video: bool
+    ) -> None:
+        mux_calls.append((video_path, audio_path, output_path, copy_video))
+        output_path.write_bytes(b"muxed")
+
+    monkeypatch.setattr("sound_cut.media.render._render_full_internal_wave", fake_render_full_internal_wave)
+    monkeypatch.setattr("sound_cut.media.render.export_delivery_audio", fake_export_delivery_audio)
+    monkeypatch.setattr("sound_cut.media.render._mux_audio_with_video", fake_mux_audio_with_video)
+    monkeypatch.setattr("sound_cut.media.render.probe_source_media", lambda path: SimpleNamespace(duration_s=4.0))
+
+    summary = render_full_video(
+        video_source=video_source,
+        audio_source=audio_source,
+        output_path=output_path,
+        loudness=LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS),
+    )
+
+    assert mux_calls
+    assert mux_calls[0][0] == video_input_path
+    assert mux_calls[0][2] == output_path
+    assert mux_calls[0][3] is True
+    assert mux_calls[0][1].suffix == ".m4a"
+    assert summary.output_duration_s == pytest.approx(4.0, abs=1e-9)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=1e-9)
+    assert summary.kept_segment_count == 1
+
+
+def test_render_video_from_edl_cuts_video_and_audio_with_shared_timeline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_input_path = tmp_path / "input.mp4"
+    output_path = tmp_path / "output.mp4"
+    video_input_path.write_bytes(b"video")
+    audio_input_path = tmp_path / "audio.wav"
+    audio_input_path.write_bytes(b"audio")
+    video_intermediate_calls: list[tuple[SourceMedia, object, Path]] = []
+
+    video_source = SourceMedia(
+        input_path=video_input_path,
+        duration_s=10.0,
+        audio_codec="aac",
+        sample_rate_hz=48_000,
+        channels=2,
+        has_video=True,
+    )
+    audio_source = SourceMedia(
+        input_path=audio_input_path,
+        duration_s=10.0,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=48_000,
+        channels=2,
+        has_video=False,
+    )
+    audio_plan = RenderPlan(
+        source=audio_source,
+        edl=EditDecisionList(
+            operations=(
+                EditOperation("keep", TimeRange(1.0, 3.0), "speech"),
+                EditOperation("keep", TimeRange(5.0, 7.0), "speech"),
+            )
+        ),
+        output_path=output_path,
+        target="audio",
+        crossfade_ms=0,
+        loudness=LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS),
+    )
+
+    def fake_render_internal_wave(plan: RenderPlan, rendered_path: Path, *, force_nonempty: bool = False) -> int:
+        assert plan is audio_plan
+        write_pcm_wave(
+            rendered_path,
+            sample_rate_hz=48_000,
+            samples=tone_samples(sample_rate_hz=48_000, duration_s=0.5),
+        )
+        return 2
+
+    def fake_export_delivery_audio(source_wav: Path, delivered_path: Path, source: SourceMedia) -> None:
+        delivered_path.write_bytes(source_wav.read_bytes())
+
+    def fake_render_internal_video(received_source: SourceMedia, edl, rendered_path: Path) -> None:
+        video_intermediate_calls.append((received_source, edl, rendered_path))
+        rendered_path.write_bytes(b"video-cut")
+
+    monkeypatch.setattr("sound_cut.media.render._render_internal_wave", fake_render_internal_wave)
+    monkeypatch.setattr("sound_cut.media.render.export_delivery_audio", fake_export_delivery_audio)
+    monkeypatch.setattr("sound_cut.media.render._render_internal_video", fake_render_internal_video)
+    monkeypatch.setattr(
+        "sound_cut.media.render._mux_audio_with_video",
+        lambda video_path, audio_path, output_path, *, copy_video: output_path.write_bytes(b"muxed"),
+    )
+    monkeypatch.setattr("sound_cut.media.render.probe_source_media", lambda path: SimpleNamespace(duration_s=4.0))
+
+    summary = render_video_from_edl(video_source=video_source, audio_plan=audio_plan)
+
+    assert video_intermediate_calls
+    assert video_intermediate_calls[0][0] == video_source
+    assert video_intermediate_calls[0][1] is audio_plan.edl
+    assert summary.input_duration_s == pytest.approx(10.0, abs=1e-9)
+    assert summary.output_duration_s == pytest.approx(4.0, abs=1e-9)
+    assert summary.removed_duration_s == pytest.approx(6.0, abs=1e-9)
+    assert summary.kept_segment_count == 2

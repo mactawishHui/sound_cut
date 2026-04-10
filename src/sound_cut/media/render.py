@@ -5,7 +5,14 @@ import tempfile
 import wave
 from pathlib import Path
 
-from sound_cut.core.models import RenderPlan, RenderSummary
+from sound_cut.core.errors import MediaError
+from sound_cut.core.models import (
+    EditDecisionList,
+    LoudnessNormalizationConfig,
+    RenderPlan,
+    RenderSummary,
+    SourceMedia,
+)
 from sound_cut.editing.timeline import kept_ranges
 from sound_cut.media.ffmpeg_tools import (
     _require_binary,
@@ -145,6 +152,177 @@ def _render_internal_wave(plan: RenderPlan, output_path: Path, *, force_nonempty
     return len(ranges)
 
 
+def _render_full_internal_wave(source: SourceMedia, output_path: Path) -> None:
+    ffmpeg = _require_binary("ffmpeg")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg,
+        "-y",
+        "-nostats",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source.input_path),
+        "-vn",
+        "-c:a",
+        "pcm_s16le",
+    ]
+    if source.sample_rate_hz is not None:
+        command.extend(["-ar", str(source.sample_rate_hz)])
+    if source.channels is not None:
+        command.extend(["-ac", str(source.channels)])
+    command.extend(
+        [
+            "-f",
+            "wav",
+            str(output_path),
+        ]
+    )
+    _run(command)
+
+
+def _render_internal_video(source: SourceMedia, edl: EditDecisionList, output_path: Path) -> None:
+    ranges = kept_ranges(edl)
+    if not ranges:
+        raise MediaError("Cannot render video with empty keep ranges")
+
+    ffmpeg = _require_binary("ffmpeg")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    filter_steps: list[str] = []
+    concat_inputs: list[str] = []
+    for index, item in enumerate(ranges):
+        label = f"v{index}"
+        filter_steps.append(
+            f"[0:v]trim=start={_format_seconds(item.start_s)}:end={_format_seconds(item.end_s)},setpts=PTS-STARTPTS[{label}]"
+        )
+        concat_inputs.append(f"[{label}]")
+    filter_steps.append(
+        "".join(concat_inputs) + f"concat=n={len(ranges)}:v=1:a=0[vout]"
+    )
+
+    _run(
+        [
+            ffmpeg,
+            "-y",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source.input_path),
+            "-filter_complex",
+            ";".join(filter_steps),
+            "-map",
+            "[vout]",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    )
+
+
+def _mux_audio_with_video(video_path: Path, audio_path: Path, output_path: Path, *, copy_video: bool) -> None:
+    ffmpeg = _require_binary("ffmpeg")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg,
+        "-y",
+        "-nostats",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy" if copy_video else "libx264",
+        "-c:a",
+        "copy",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    _run(command)
+
+
+def render_video_from_edl(*, video_source: SourceMedia, audio_plan: RenderPlan) -> RenderSummary:
+    output_path = audio_plan.output_path
+    with tempfile.TemporaryDirectory(prefix="sound-cut-video-render-") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        internal_audio_path = temp_dir / "audio.render.wav"
+        kept_segment_count = _render_internal_wave(
+            audio_plan,
+            internal_audio_path,
+            force_nonempty=True,
+        )
+        delivery_audio_input = internal_audio_path
+        if audio_plan.loudness.enabled and kept_segment_count > 0:
+            delivery_audio_input = temp_dir / "audio.normalized.wav"
+            normalize_loudness(
+                internal_audio_path,
+                delivery_audio_input,
+                target_lufs=audio_plan.loudness.target_lufs,
+            )
+        delivery_audio_path = temp_dir / "audio.track.m4a"
+        export_delivery_audio(delivery_audio_input, delivery_audio_path, audio_plan.source)
+
+        cut_video_path = temp_dir / "video.cut.mp4"
+        _render_internal_video(video_source, audio_plan.edl, cut_video_path)
+        _mux_audio_with_video(cut_video_path, delivery_audio_path, output_path, copy_video=True)
+
+    output_duration_s = probe_source_media(output_path).duration_s
+    return RenderSummary(
+        input_duration_s=video_source.duration_s,
+        output_duration_s=output_duration_s,
+        removed_duration_s=max(0.0, video_source.duration_s - output_duration_s),
+        kept_segment_count=kept_segment_count,
+    )
+
+
+def render_full_video(
+    *, video_source: SourceMedia, audio_source: SourceMedia, output_path: Path, loudness: LoudnessNormalizationConfig
+) -> RenderSummary:
+    with tempfile.TemporaryDirectory(prefix="sound-cut-video-render-") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        internal_audio_path = temp_dir / "audio.render.wav"
+        _render_full_internal_wave(audio_source, internal_audio_path)
+
+        delivery_audio_input = internal_audio_path
+        if loudness.enabled:
+            delivery_audio_input = temp_dir / "audio.normalized.wav"
+            normalize_loudness(
+                internal_audio_path,
+                delivery_audio_input,
+                target_lufs=loudness.target_lufs,
+            )
+
+        delivery_audio_path = temp_dir / "audio.track.m4a"
+        export_delivery_audio(delivery_audio_input, delivery_audio_path, audio_source)
+        _mux_audio_with_video(video_source.input_path, delivery_audio_path, output_path, copy_video=True)
+
+    output_duration_s = probe_source_media(output_path).duration_s
+    return RenderSummary(
+        input_duration_s=video_source.duration_s,
+        output_duration_s=output_duration_s,
+        removed_duration_s=max(0.0, video_source.duration_s - output_duration_s),
+        kept_segment_count=1,
+    )
+
+
 def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
     output_path = plan.output_path
 
@@ -179,4 +357,33 @@ def render_audio_from_edl(plan: RenderPlan) -> RenderSummary:
         output_duration_s=output_duration_s,
         removed_duration_s=max(0.0, plan.source.duration_s - output_duration_s),
         kept_segment_count=kept_segment_count,
+    )
+
+
+def render_full_audio(
+    *, source: SourceMedia, output_path: Path, loudness: LoudnessNormalizationConfig
+) -> RenderSummary:
+    with tempfile.TemporaryDirectory(prefix="sound-cut-render-") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        internal_output_path = temp_dir / "render.wav"
+        _render_full_internal_wave(source, internal_output_path)
+        delivery_input_path = internal_output_path
+        if loudness.enabled:
+            delivery_input_path = temp_dir / "normalized.wav"
+            normalize_loudness(
+                internal_output_path,
+                delivery_input_path,
+                target_lufs=loudness.target_lufs,
+            )
+        export_delivery_audio(delivery_input_path, output_path, source)
+
+    if output_path.suffix.lower() == ".wav":
+        output_duration_s = _resolve_wav_duration_s(output_path)
+    else:
+        output_duration_s = probe_source_media(output_path).duration_s
+    return RenderSummary(
+        input_duration_s=source.duration_s,
+        output_duration_s=output_duration_s,
+        removed_duration_s=0.0,
+        kept_segment_count=1,
     )

@@ -6,14 +6,21 @@ import math
 import re
 import struct
 import subprocess
+import types
 import wave
 from pathlib import Path
 
 import pytest
 
 from sound_cut.core import AnalysisTrack, MediaError, RenderSummary, TimeRange, build_profile
-from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
+from sound_cut.core.models import (
+    DEFAULT_TARGET_LUFS,
+    EnhancementConfig,
+    LoudnessNormalizationConfig,
+    SourceMedia,
+)
 from sound_cut.editing.pipeline import process_audio
+from sound_cut.enhancement.pipeline import enhance_audio
 from tests.helpers import silence_samples, tone_samples, write_pcm_wave
 
 
@@ -102,6 +109,7 @@ def test_process_audio_writes_output_and_returns_summary(tmp_path: Path, ffmpeg_
         input_path=input_path,
         output_path=output_path,
         profile=profile,
+        enable_cut=True,
         analyzer=analyzer,
     )
 
@@ -141,6 +149,7 @@ def test_process_audio_refines_dense_profile_speech_ranges(
         input_path=input_path,
         output_path=output_path,
         profile=profile,
+        enable_cut=True,
         analyzer=analyzer,
     )
 
@@ -170,6 +179,7 @@ def test_process_audio_does_not_refine_balanced_profile_speech_ranges(
         input_path=input_path,
         output_path=output_path,
         profile=profile,
+        enable_cut=True,
         analyzer=analyzer,
     )
 
@@ -188,6 +198,7 @@ def test_process_audio_preserves_normalized_analysis_wav_when_keep_temp_true(
         input_path=input_path,
         output_path=output_path,
         profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=True,
         analyzer=analyzer,
         keep_temp=True,
     )
@@ -207,6 +218,7 @@ def test_process_audio_honors_falsey_analyzer_injection(tmp_path: Path, ffmpeg_a
         input_path=input_path,
         output_path=output_path,
         profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=True,
         analyzer=analyzer,
     )
 
@@ -223,6 +235,7 @@ def test_process_audio_rejects_in_place_output(tmp_path: Path, ffmpeg_available)
             input_path=input_path,
             output_path=input_path,
             profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+            enable_cut=True,
             analyzer=FakeSpeechAnalyzer((TimeRange(0.0, 0.5),)),
         )
 
@@ -252,11 +265,194 @@ def test_process_audio_passes_loudness_config_into_render_plan(
         input_path=input_path,
         output_path=output_path,
         profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=True,
         analyzer=analyzer,
         loudness=loudness,
     )
 
     assert captured["plan"].loudness == loudness
+
+
+def test_process_audio_skips_analyzer_when_cut_disabled(
+    tmp_path: Path, ffmpeg_available
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(input_path, sample_rate_hz=48_000, samples=tone_samples(sample_rate_hz=48_000, duration_s=0.5))
+
+    def fail_analyze(_wav_path: Path) -> AnalysisTrack:
+        raise AssertionError("analyzer should not be used when cut is disabled")
+
+    analyzer = types.SimpleNamespace(analyze=fail_analyze)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=False,
+        analyzer=analyzer,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+
+    assert summary.input_duration_s == pytest.approx(0.5, abs=1e-9)
+    assert summary.output_duration_s == pytest.approx(0.5, abs=0.02)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=0.02)
+    assert summary.kept_segment_count == 1
+
+
+def test_process_audio_routes_video_without_cut_to_full_video_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.mp4"
+    output_path = tmp_path / "output.mp4"
+    input_path.write_bytes(b"video")
+    enhanced_audio_path = tmp_path / "enhanced.wav"
+    enhanced_audio_path.write_bytes(b"audio")
+    captured: dict[str, object] = {}
+
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=2.0,
+        audio_codec="aac",
+        sample_rate_hz=48_000,
+        channels=2,
+        bit_rate_bps=96_000,
+        has_video=True,
+    )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.probe_source_media", lambda _path: source)
+    monkeypatch.setattr(
+        "sound_cut.editing.pipeline.enhance_audio",
+        lambda *, input_path, enhancement, working_dir: enhanced_audio_path,
+    )
+
+    def fake_render_full_video(*, video_source, audio_source, output_path, loudness):
+        captured["video_source"] = video_source
+        captured["audio_source"] = audio_source
+        captured["output_path"] = output_path
+        captured["loudness"] = loudness
+        return RenderSummary(
+            input_duration_s=2.0,
+            output_duration_s=2.0,
+            removed_duration_s=0.0,
+            kept_segment_count=1,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_full_video", fake_render_full_video)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=build_profile("balanced"),
+        enable_cut=False,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+
+    assert summary.kept_segment_count == 1
+    assert captured["video_source"] == source
+    assert captured["audio_source"].input_path == enhanced_audio_path
+    assert captured["audio_source"].has_video is True
+    assert captured["output_path"] == output_path
+
+
+def test_process_audio_routes_video_with_cut_to_video_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.mp4"
+    output_path = tmp_path / "output.mp4"
+    input_path.write_bytes(b"video")
+    enhanced_audio_path = tmp_path / "enhanced.wav"
+    enhanced_audio_path.write_bytes(b"audio")
+    captured: dict[str, object] = {}
+
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=3.0,
+        audio_codec="aac",
+        sample_rate_hz=48_000,
+        channels=2,
+        bit_rate_bps=96_000,
+        has_video=True,
+    )
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 1.0),))
+    profile = replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0)
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.probe_source_media", lambda _path: source)
+    monkeypatch.setattr(
+        "sound_cut.editing.pipeline.enhance_audio",
+        lambda *, input_path, enhancement, working_dir: enhanced_audio_path,
+    )
+
+    def fake_process_cut_video(
+        *,
+        input_path,
+        output_path,
+        profile,
+        video_source,
+        audio_source,
+        analyzer,
+        keep_temp,
+        loudness,
+    ):
+        captured["input_path"] = input_path
+        captured["output_path"] = output_path
+        captured["profile"] = profile
+        captured["video_source"] = video_source
+        captured["audio_source"] = audio_source
+        captured["analyzer"] = analyzer
+        captured["keep_temp"] = keep_temp
+        captured["loudness"] = loudness
+        return RenderSummary(
+            input_duration_s=3.0,
+            output_duration_s=2.0,
+            removed_duration_s=1.0,
+            kept_segment_count=2,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline._process_cut_video", fake_process_cut_video)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=profile,
+        enable_cut=True,
+        analyzer=analyzer,
+        keep_temp=True,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-15.0),
+    )
+
+    assert summary.kept_segment_count == 2
+    assert captured["input_path"] == enhanced_audio_path
+    assert captured["output_path"] == output_path
+    assert captured["profile"] == profile
+    assert captured["video_source"] == source
+    assert captured["audio_source"].input_path == enhanced_audio_path
+    assert captured["analyzer"] is analyzer
+    assert captured["keep_temp"] is True
+
+
+def test_process_audio_can_normalize_full_source_without_cut(tmp_path: Path, ffmpeg_available) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=48_000,
+        samples=tone_samples(sample_rate_hz=48_000, duration_s=1.0, amplitude=400),
+    )
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=False,
+        loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=-14.0),
+    )
+
+    assert summary.input_duration_s == pytest.approx(1.0, abs=1e-9)
+    assert summary.output_duration_s == pytest.approx(1.0, abs=0.02)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=0.02)
+    assert summary.kept_segment_count == 1
+    assert _integrated_lufs(output_path, target_lufs=-14.0) == pytest.approx(-14.0, abs=1.0)
 
 
 def test_process_audio_can_cut_and_normalize_in_one_command(tmp_path: Path, ffmpeg_available) -> None:
@@ -283,12 +479,14 @@ def test_process_audio_can_cut_and_normalize_in_one_command(tmp_path: Path, ffmp
         input_path=input_path,
         output_path=raw_output_path,
         profile=profile,
+        enable_cut=True,
         analyzer=FakeSpeechAnalyzer(speech_ranges),
     )
     normalized_summary = process_audio(
         input_path=input_path,
         output_path=normalized_output_path,
         profile=profile,
+        enable_cut=True,
         analyzer=FakeSpeechAnalyzer(speech_ranges),
         loudness=LoudnessNormalizationConfig(enabled=True, target_lufs=target_lufs),
     )
@@ -333,10 +531,298 @@ def test_process_audio_defaults_loudness_config_when_omitted(
         input_path=input_path,
         output_path=output_path,
         profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=True,
         analyzer=analyzer,
     )
 
     assert captured["plan"].loudness == LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS)
+
+
+def test_process_audio_runs_enhancement_before_cut_analysis(
+    tmp_path: Path, ffmpeg_available, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    enhanced_path = tmp_path / "enhanced.wav"
+    calls: dict[str, object] = {}
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 0.5),))
+
+    def fake_enhance_audio(*, input_path: Path, enhancement: EnhancementConfig, working_dir: Path) -> Path:
+        calls["enhance_input"] = input_path
+        calls["working_dir"] = working_dir
+        calls["enhancement"] = enhancement
+        write_pcm_wave(
+            enhanced_path,
+            sample_rate_hz=16_000,
+            samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5),
+        )
+        return enhanced_path
+
+    def fake_normalize_audio_for_analysis(
+        source_path: Path, normalized_path: Path, *, sample_rate_hz: int
+    ) -> None:
+        calls["analysis_input"] = source_path
+        calls["analysis_output"] = normalized_path
+        calls["analysis_sample_rate_hz"] = sample_rate_hz
+        write_pcm_wave(
+            normalized_path,
+            sample_rate_hz=sample_rate_hz,
+            samples=tone_samples(sample_rate_hz=sample_rate_hz, duration_s=0.5),
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.enhance_audio", fake_enhance_audio)
+    monkeypatch.setattr("sound_cut.editing.pipeline.normalize_audio_for_analysis", fake_normalize_audio_for_analysis)
+
+    process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enhancement=EnhancementConfig(enabled=True),
+        enable_cut=True,
+        analyzer=analyzer,
+    )
+
+    assert calls["enhance_input"] == input_path
+    assert calls["enhancement"] == EnhancementConfig(enabled=True)
+    assert calls["analysis_input"] == enhanced_path
+    assert calls["analysis_sample_rate_hz"] == 16_000
+    assert analyzer.calls == [calls["analysis_output"]]
+
+
+def test_process_audio_preserves_original_source_metadata_for_cut_rendering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    enhanced_path = tmp_path / "enhanced.wav"
+    calls: dict[str, object] = {}
+    write_pcm_wave(input_path, sample_rate_hz=48_000, samples=tone_samples(sample_rate_hz=48_000, duration_s=0.1))
+    original_source = SourceMedia(
+        input_path=input_path,
+        duration_s=10.0,
+        audio_codec="aac",
+        sample_rate_hz=48_000,
+        channels=2,
+        bit_rate_bps=192_000,
+    )
+    enhanced_source = SourceMedia(
+        input_path=enhanced_path,
+        duration_s=6.5,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=16_000,
+        channels=1,
+        bit_rate_bps=256_000,
+    )
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 4.0),))
+
+    def fake_enhance_audio(*, input_path: Path, enhancement: EnhancementConfig, working_dir: Path) -> Path:
+        calls["enhance_input"] = input_path
+        calls["enhancement"] = enhancement
+        return enhanced_path
+
+    def fake_probe_source_media(path: Path) -> SourceMedia:
+        if path == input_path:
+            return original_source
+        if path == enhanced_path:
+            return enhanced_source
+        raise AssertionError(f"unexpected probe path: {path}")
+
+    def fake_normalize_audio_for_analysis(
+        source_path: Path, normalized_path: Path, *, sample_rate_hz: int
+    ) -> None:
+        calls["analysis_input"] = source_path
+        write_pcm_wave(
+            normalized_path,
+            sample_rate_hz=sample_rate_hz,
+            samples=tone_samples(sample_rate_hz=sample_rate_hz, duration_s=0.1),
+        )
+
+    def fake_render_audio_from_edl(plan) -> RenderSummary:
+        calls["render_plan_source"] = plan.source
+        return RenderSummary(
+            input_duration_s=plan.source.duration_s,
+            output_duration_s=4.0,
+            removed_duration_s=plan.source.duration_s - 4.0,
+            kept_segment_count=1,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.enhance_audio", fake_enhance_audio)
+    monkeypatch.setattr("sound_cut.editing.pipeline.probe_source_media", fake_probe_source_media)
+    monkeypatch.setattr("sound_cut.editing.pipeline.normalize_audio_for_analysis", fake_normalize_audio_for_analysis)
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_audio_from_edl", fake_render_audio_from_edl)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enhancement=EnhancementConfig(enabled=True),
+        enable_cut=True,
+        analyzer=analyzer,
+    )
+
+    assert calls["enhance_input"] == input_path
+    assert calls["analysis_input"] == enhanced_path
+    assert calls["render_plan_source"] == replace(original_source, input_path=enhanced_path)
+    assert summary.input_duration_s == pytest.approx(10.0, abs=1e-9)
+    assert summary.removed_duration_s == pytest.approx(6.0, abs=1e-9)
+
+
+def test_process_audio_uses_enhanced_source_for_full_audio_render(
+    tmp_path: Path, ffmpeg_available, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    enhanced_path = tmp_path / "enhanced.wav"
+    calls: dict[str, object] = {}
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=48_000,
+        samples=tone_samples(sample_rate_hz=48_000, duration_s=0.5, amplitude=400),
+    )
+    write_pcm_wave(
+        enhanced_path,
+        sample_rate_hz=48_000,
+        samples=tone_samples(sample_rate_hz=48_000, duration_s=0.5, amplitude=2_000),
+    )
+
+    def fake_enhance_audio(*, input_path: Path, enhancement: EnhancementConfig, working_dir: Path) -> Path:
+        calls["enhance_input"] = input_path
+        calls["enhancement"] = enhancement
+        calls["working_dir"] = working_dir
+        return enhanced_path
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.enhance_audio", fake_enhance_audio)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enhancement=EnhancementConfig(enabled=True),
+        enable_cut=False,
+    )
+
+    assert calls["enhance_input"] == input_path
+    assert calls["enhancement"] == EnhancementConfig(enabled=True)
+    assert isinstance(calls["working_dir"], Path)
+    assert summary.input_duration_s == pytest.approx(0.5, abs=1e-9)
+    assert summary.output_duration_s == pytest.approx(0.5, abs=0.02)
+    assert summary.removed_duration_s == pytest.approx(0.0, abs=0.02)
+    assert summary.kept_segment_count == 1
+    assert _window_rms(output_path, start_s=0.1, duration_s=0.2) > _window_rms(
+        input_path,
+        start_s=0.1,
+        duration_s=0.2,
+    )
+
+
+def test_process_audio_preserves_original_source_metadata_for_full_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    enhanced_path = tmp_path / "enhanced.wav"
+    calls: dict[str, object] = {}
+    write_pcm_wave(input_path, sample_rate_hz=48_000, samples=tone_samples(sample_rate_hz=48_000, duration_s=0.1))
+    original_source = SourceMedia(
+        input_path=input_path,
+        duration_s=8.0,
+        audio_codec="aac",
+        sample_rate_hz=48_000,
+        channels=2,
+        bit_rate_bps=256_000,
+    )
+    enhanced_source = SourceMedia(
+        input_path=enhanced_path,
+        duration_s=5.0,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=16_000,
+        channels=1,
+        bit_rate_bps=128_000,
+    )
+
+    def fake_enhance_audio(*, input_path: Path, enhancement: EnhancementConfig, working_dir: Path) -> Path:
+        calls["enhance_input"] = input_path
+        calls["enhancement"] = enhancement
+        return enhanced_path
+
+    def fake_probe_source_media(path: Path) -> SourceMedia:
+        if path == input_path:
+            return original_source
+        if path == enhanced_path:
+            return enhanced_source
+        raise AssertionError(f"unexpected probe path: {path}")
+
+    def fake_render_full_audio(*, source: SourceMedia, output_path: Path, loudness: LoudnessNormalizationConfig) -> RenderSummary:
+        calls["render_source"] = source
+        return RenderSummary(
+            input_duration_s=source.duration_s,
+            output_duration_s=source.duration_s,
+            removed_duration_s=0.0,
+            kept_segment_count=1,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.enhance_audio", fake_enhance_audio)
+    monkeypatch.setattr("sound_cut.editing.pipeline.probe_source_media", fake_probe_source_media)
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_full_audio", fake_render_full_audio)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enhancement=EnhancementConfig(enabled=True),
+        enable_cut=False,
+    )
+
+    assert calls["enhance_input"] == input_path
+    assert calls["render_source"] == replace(original_source, input_path=enhanced_path)
+    assert summary.input_duration_s == pytest.approx(8.0, abs=1e-9)
+    assert summary.output_duration_s == pytest.approx(8.0, abs=1e-9)
+
+
+def test_enhance_audio_requires_backend_to_create_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.1))
+    enhancement = EnhancementConfig(enabled=True)
+
+    class FakeEnhancer:
+        backend_name = "fake"
+
+        def validate(self) -> None:
+            return None
+
+        def enhance(self, input_path: Path, output_path: Path) -> None:
+            _ = input_path, output_path
+
+    monkeypatch.setattr("sound_cut.enhancement.pipeline.select_enhancer", lambda config: FakeEnhancer())
+
+    with pytest.raises(MediaError, match="did not create"):
+        enhance_audio(
+            input_path=input_path,
+            enhancement=enhancement,
+            working_dir=tmp_path / "work",
+        )
+
+
+def test_process_audio_defaults_enable_cut_to_true_for_backward_compatibility(
+    tmp_path: Path, ffmpeg_available
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 0.5),))
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        analyzer=analyzer,
+    )
+
+    assert analyzer.calls
+    assert summary.kept_segment_count == 1
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
