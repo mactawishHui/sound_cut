@@ -70,7 +70,7 @@ def _split_long_segments(
         for piece in pieces:
             piece_dur = duration * len(piece) / max(total_chars, 1)
             result.append(
-                SubtitleSegment(index=0, start_s=t, end_s=t + piece_dur, text=piece.strip())
+                SubtitleSegment(index=1, start_s=t, end_s=t + piece_dur, text=piece.strip())
             )
             t += piece_dur
 
