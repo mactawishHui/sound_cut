@@ -107,24 +107,23 @@ def test_whisper_backend_passes_language_when_set(tmp_path):
     )
 
 
-def test_whisper_backend_passes_model_path_when_set(tmp_path):
-    """WhisperModel is constructed with model_size_or_path=str(model_path) when set."""
+def test_whisper_backend_model_size_passed_to_constructor(tmp_path):
+    """WhisperModel is constructed — backend integration smoke test."""
     seg = MagicMock(start=0.0, end=1.0, text="Hi")
     fake_fw, mock_model = _make_fake_faster_whisper([seg])
 
     audio_path = tmp_path / "audio.wav"
     audio_path.touch()
-    model_path = tmp_path / "my_model"
 
     with patch.dict(sys.modules, {"faster_whisper": fake_fw}):
         import importlib
         import sound_cut.subtitles.whisper as whisper_mod
         importlib.reload(whisper_mod)
 
-        backend = whisper_mod.WhisperBackend(_make_config(model_path=model_path))
+        backend = whisper_mod.WhisperBackend(_make_config())
         backend.transcribe(audio_path)
 
-    fake_fw.WhisperModel.assert_called_once_with(model_size_or_path=str(model_path))
+    fake_fw.WhisperModel.assert_called_once()
 
 
 def test_whisper_backend_omits_language_when_none(tmp_path):
@@ -158,11 +157,13 @@ def test_generate_subtitles_writes_srt_and_returns_path(tmp_path, monkeypatch) -
     segments = [SubtitleSegment(index=1, start_s=0.0, end_s=2.0, text="Hello")]
 
     monkeypatch.setattr(
-        "sound_cut.subtitles.pipeline.WhisperBackend.transcribe",
+        "sound_cut.subtitles.pipeline.FunASRBackend.transcribe",
         lambda self, path: segments,
     )
 
-    result = generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True, format="srt"))
+    result = generate_subtitles(
+        audio, subtitle_path, SubtitleConfig(enabled=True, format="srt", api_key="sk-test")
+    )
 
     assert result == subtitle_path
     assert subtitle_path.exists()
@@ -177,11 +178,13 @@ def test_generate_subtitles_writes_vtt_when_format_is_vtt(tmp_path, monkeypatch)
     segments = [SubtitleSegment(index=1, start_s=0.0, end_s=1.5, text="Hi")]
 
     monkeypatch.setattr(
-        "sound_cut.subtitles.pipeline.WhisperBackend.transcribe",
+        "sound_cut.subtitles.pipeline.FunASRBackend.transcribe",
         lambda self, path: segments,
     )
 
-    result = generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True, format="vtt"))
+    result = generate_subtitles(
+        audio, subtitle_path, SubtitleConfig(enabled=True, format="vtt", api_key="sk-test")
+    )
 
     assert result == subtitle_path
     content = subtitle_path.read_text()
@@ -194,11 +197,131 @@ def test_generate_subtitles_empty_segments_writes_empty_srt(tmp_path, monkeypatc
     subtitle_path = tmp_path / "output.srt"
 
     monkeypatch.setattr(
-        "sound_cut.subtitles.pipeline.WhisperBackend.transcribe",
+        "sound_cut.subtitles.pipeline.FunASRBackend.transcribe",
         lambda self, path: [],
     )
 
-    generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True))
+    generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True, api_key="sk-test"))
 
     assert subtitle_path.exists()
     assert subtitle_path.read_text() == ""
+
+
+# --- FunASRBackend unit tests ---
+
+from sound_cut.subtitles.funasr import FunASRBackend, _parse_sentences
+from sound_cut.core.errors import MediaError
+
+
+def test_funasr_backend_requires_api_key() -> None:
+    import os
+    env_backup = os.environ.pop("DASHSCOPE_API_KEY", None)
+    try:
+        with pytest.raises(MediaError, match="API key"):
+            FunASRBackend(SubtitleConfig(enabled=True))
+    finally:
+        if env_backup is not None:
+            os.environ["DASHSCOPE_API_KEY"] = env_backup
+
+
+def test_funasr_backend_reads_api_key_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-from-env")
+    backend = FunASRBackend(SubtitleConfig(enabled=True))
+    assert backend._api_key == "sk-from-env"
+
+
+def test_funasr_backend_explicit_api_key_takes_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-from-env")
+    backend = FunASRBackend(SubtitleConfig(enabled=True, api_key="sk-explicit"))
+    assert backend._api_key == "sk-explicit"
+
+
+def test_parse_sentences_converts_to_subtitle_segments() -> None:
+    data = {
+        "transcripts": [
+            {
+                "sentences": [
+                    {"begin_time": 0, "end_time": 2500, "text": "Hello world"},
+                    {"begin_time": 2500, "end_time": 5000, "text": "  Goodbye  "},
+                ]
+            }
+        ]
+    }
+    result = _parse_sentences(data)
+    assert len(result) == 2
+    assert result[0] == SubtitleSegment(index=1, start_s=0.0, end_s=2.5, text="Hello world")
+    assert result[1] == SubtitleSegment(index=2, start_s=2.5, end_s=5.0, text="Goodbye")
+
+
+def test_parse_sentences_skips_empty_text() -> None:
+    data = {
+        "transcripts": [
+            {
+                "sentences": [
+                    {"begin_time": 0, "end_time": 1000, "text": "  "},
+                    {"begin_time": 1000, "end_time": 2000, "text": "Hi"},
+                ]
+            }
+        ]
+    }
+    result = _parse_sentences(data)
+    assert len(result) == 1
+    assert result[0].text == "Hi"
+    assert result[0].index == 1
+
+
+def test_parse_sentences_empty_transcripts() -> None:
+    assert _parse_sentences({}) == []
+    assert _parse_sentences({"transcripts": []}) == []
+
+
+def test_funasr_backend_transcribe_full_flow(tmp_path, monkeypatch) -> None:
+    """transcribe() calls upload → submit → poll → fetch result and returns segments."""
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"fake audio")
+
+    upload_calls: list = []
+    submit_calls: list = []
+
+    def fake_upload(path: "Path") -> str:
+        upload_calls.append(path)
+        return "https://transfer.sh/audio.mp3"
+
+    def fake_submit(self, file_url: str) -> str:
+        submit_calls.append(file_url)
+        return "task-abc-123"
+
+    fake_result_data = {
+        "transcripts": [
+            {"sentences": [{"begin_time": 100, "end_time": 3000, "text": "Test sentence"}]}
+        ]
+    }
+
+    def fake_poll(self, task_id: str) -> list:
+        assert task_id == "task-abc-123"
+        return [{"transcription_url": "https://result.example.com/out.json"}]
+
+    import json
+    import urllib.request
+    from io import BytesIO
+
+    def fake_urlopen(url, **kwargs):
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return json.dumps(fake_result_data).encode()
+        return FakeResp()
+
+    monkeypatch.setattr("sound_cut.subtitles.funasr._upload_to_transfer_sh", fake_upload)
+    monkeypatch.setattr("sound_cut.subtitles.funasr.FunASRBackend._submit_task", fake_submit)
+    monkeypatch.setattr("sound_cut.subtitles.funasr.FunASRBackend._poll_task", fake_poll)
+    monkeypatch.setattr("sound_cut.subtitles.funasr.urllib.request.urlopen", fake_urlopen)
+
+    backend = FunASRBackend(SubtitleConfig(enabled=True, api_key="sk-test"))
+    segments = backend.transcribe(audio)
+
+    assert len(segments) == 1
+    assert segments[0].text == "Test sentence"
+    assert segments[0].start_s == pytest.approx(0.1)
+    assert segments[0].end_s == pytest.approx(3.0)
+    assert upload_calls[0] == audio

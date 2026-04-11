@@ -5,3 +5,5 @@ Requires-Python: >=3.11
 Requires-Dist: webrtcvad==2.0.10
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
+Provides-Extra: subtitle
+Requires-Dist: faster-whisper>=1.0; extra == "subtitle"

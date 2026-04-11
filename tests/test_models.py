@@ -79,8 +79,8 @@ def test_subtitle_config_defaults() -> None:
     config = SubtitleConfig(enabled=True)
     assert config.language is None
     assert config.format == "srt"
-    assert config.model_size == "base"
-    assert config.model_path is None
+    assert config.api_key is None
+    assert config.sidecar_only is False
 
 
 def test_subtitle_config_rejects_invalid_format() -> None:
@@ -88,9 +88,14 @@ def test_subtitle_config_rejects_invalid_format() -> None:
         SubtitleConfig(enabled=True, format="invalid")
 
 
-def test_subtitle_config_rejects_invalid_model_size() -> None:
-    with pytest.raises(ValueError, match="model_size must be one of"):
-        SubtitleConfig(enabled=True, model_size="invalid")
+def test_subtitle_config_accepts_api_key() -> None:
+    config = SubtitleConfig(enabled=True, api_key="sk-abc123")
+    assert config.api_key == "sk-abc123"
+
+
+def test_subtitle_config_sidecar_only() -> None:
+    config = SubtitleConfig(enabled=True, sidecar_only=True)
+    assert config.sidecar_only is True
 
 
 def test_subtitle_segment_rejects_zero_index() -> None:

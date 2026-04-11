@@ -73,7 +73,6 @@ class EnhancementConfig:
 
 
 SUPPORTED_SUBTITLE_FORMATS = ("srt", "vtt")
-SUPPORTED_SUBTITLE_MODELS = ("tiny", "base", "small", "medium", "large")
 
 
 @dataclass(frozen=True)
@@ -93,18 +92,14 @@ class SubtitleSegment:
 @dataclass(frozen=True)
 class SubtitleConfig:
     enabled: bool
-    language: str | None = None      # None = faster-whisper auto-detect
-    format: str = "srt"              # "srt" | "vtt"
-    model_size: str = "base"         # tiny | base | small | medium | large
-    model_path: Path | None = None   # overrides HuggingFace cache dir
+    language: str | None = None   # None = API auto-detect
+    format: str = "srt"           # "srt" | "vtt"
+    api_key: str | None = None    # DashScope API key for FunASR (or via DASHSCOPE_API_KEY env)
+    sidecar_only: bool = False    # True = only write .srt sidecar, skip embedding in video
 
     def __post_init__(self) -> None:
         if self.format not in SUPPORTED_SUBTITLE_FORMATS:
             raise ValueError(f"format must be one of {SUPPORTED_SUBTITLE_FORMATS!r}")
-        if self.model_size not in SUPPORTED_SUBTITLE_MODELS:
-            raise ValueError(f"model_size must be one of {SUPPORTED_SUBTITLE_MODELS!r}")
-        if self.model_path is not None and not isinstance(self.model_path, Path):
-            object.__setattr__(self, "model_path", Path(self.model_path))
 
 
 @dataclass(frozen=True)

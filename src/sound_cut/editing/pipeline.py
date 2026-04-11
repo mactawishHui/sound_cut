@@ -35,23 +35,31 @@ def _apply_subtitles(
     subtitle_config: SubtitleConfig,
     *,
     has_video: bool,
-) -> Path:
-    """Transcribe rendered output and write/embed subtitle file. Returns subtitle file path."""
-    subtitle_suffix = f".{subtitle_config.format}"
-    subtitle_path = rendered_path.with_suffix(subtitle_suffix)
-    generate_subtitles(rendered_path, subtitle_path, subtitle_config)
-    if has_video:
+) -> Path | None:
+    """Transcribe rendered output and embed/write subtitles.
+
+    Default (sidecar_only=False):
+      - Video: embed as soft subtitle track; no sidecar file kept → returns None.
+      - Audio: write .srt/.vtt sidecar → returns sidecar path.
+
+    With sidecar_only=True:
+      - Write subtitle file only, skip embedding → returns sidecar path.
+    """
+    if has_video and not subtitle_config.sidecar_only:
+        # Embed into video; keep everything in a temp dir (no permanent sidecar)
         with tempfile.TemporaryDirectory(prefix="sound-cut-subs-") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
+            temp_srt = temp_dir / "subtitle.srt"
+            # ffmpeg mov_text/srt codecs require SRT — always generate SRT for embedding
+            generate_subtitles(rendered_path, temp_srt, replace(subtitle_config, format="srt"))
             temp_with_subs = temp_dir / rendered_path.name
-            # ffmpeg mov_text/srt codecs require SRT input — convert VTT to SRT if needed
-            if subtitle_config.format == "vtt":
-                srt_for_embed = temp_dir / "subtitle_for_embed.srt"
-                generate_subtitles(rendered_path, srt_for_embed, replace(subtitle_config, format="srt"))
-                embed_subtitle_track(rendered_path, srt_for_embed, temp_with_subs)
-            else:
-                embed_subtitle_track(rendered_path, subtitle_path, temp_with_subs)
+            embed_subtitle_track(rendered_path, temp_srt, temp_with_subs)
             shutil.move(str(temp_with_subs), str(rendered_path))
+        return None
+
+    # Audio-only or explicit sidecar_only: write subtitle file beside the output
+    subtitle_path = rendered_path.with_suffix(f".{subtitle_config.format}")
+    generate_subtitles(rendered_path, subtitle_path, subtitle_config)
     return subtitle_path
 
 

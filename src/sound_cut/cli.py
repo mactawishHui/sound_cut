@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -49,16 +50,11 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
             choices=("srt", "vtt"),
             default="srt",
         )
-        self.add_argument(
-            "--subtitle-language",
-            default=None,
-        )
-        self.add_argument(
-            "--subtitle-model",
-            choices=("tiny", "base", "small", "medium", "large"),
-            default="base",
-        )
-        self.add_argument("--subtitle-model-path", type=Path)
+        self.add_argument("--subtitle-language", default=None)
+        self.add_argument("--subtitle-api-key", default=None,
+                          help="DashScope API key (default: DASHSCOPE_API_KEY env var)")
+        self.add_argument("--subtitle-sidecar", action="store_true",
+                          help="Write .srt/.vtt sidecar file only; skip embedding in video")
 
     def parse_args(self, args=None, namespace=None):
         argv = sys.argv[1:] if args is None else list(args)
@@ -121,12 +117,13 @@ def _resolve_enhancement_config(args: argparse.Namespace) -> EnhancementConfig:
 
 
 def _resolve_subtitle_config(args: argparse.Namespace) -> SubtitleConfig:
+    api_key = args.subtitle_api_key or os.environ.get("DASHSCOPE_API_KEY")
     return SubtitleConfig(
         enabled=args.subtitle,
         language=args.subtitle_language,
         format=args.subtitle_format,
-        model_size=args.subtitle_model,
-        model_path=args.subtitle_model_path,
+        api_key=api_key,
+        sidecar_only=args.subtitle_sidecar,
     )
 
 

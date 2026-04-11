@@ -26,9 +26,9 @@ class WhisperBackend:
 
     def transcribe(self, audio_path: Path) -> list[SubtitleSegment]:
         fw = _require_faster_whisper()
-        model_kwargs: dict[str, Any] = {"model_size_or_path": self._config.model_size}
-        if self._config.model_path is not None:
-            model_kwargs["model_size_or_path"] = str(self._config.model_path)
+        # SubtitleConfig no longer exposes model_size/model_path (FunASR is the primary backend).
+        # WhisperBackend falls back to "base" model when called directly.
+        model_kwargs: dict[str, Any] = {"model_size_or_path": "base"}
         model = fw.WhisperModel(**model_kwargs)
         transcribe_kwargs: dict[str, Any] = {"audio": str(audio_path)}
         if self._config.language is not None:

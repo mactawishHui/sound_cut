@@ -770,9 +770,9 @@ def test_parse_args_subtitle_defaults(tmp_path: Path) -> None:
 
     assert args.subtitle is False
     assert args.subtitle_format == "srt"
-    assert args.subtitle_model == "base"
     assert args.subtitle_language is None
-    assert args.subtitle_model_path is None
+    assert args.subtitle_api_key is None
+    assert args.subtitle_sidecar is False
 
 
 def test_parse_args_subtitle_sets_flags(tmp_path: Path) -> None:
@@ -786,15 +786,17 @@ def test_parse_args_subtitle_sets_flags(tmp_path: Path) -> None:
             "vtt",
             "--subtitle-language",
             "en",
-            "--subtitle-model",
-            "small",
+            "--subtitle-api-key",
+            "sk-test",
+            "--subtitle-sidecar",
         ]
     )
 
     assert args.subtitle is True
     assert args.subtitle_format == "vtt"
     assert args.subtitle_language == "en"
-    assert args.subtitle_model == "small"
+    assert args.subtitle_api_key == "sk-test"
+    assert args.subtitle_sidecar is True
 
 
 def test_parse_args_subtitle_alone_is_valid(tmp_path: Path) -> None:
@@ -816,15 +818,17 @@ def test_parse_args_no_mode_selected_still_errors(tmp_path: Path) -> None:
     assert excinfo.value.code == 2
 
 
-def test_resolve_subtitle_config_enabled(tmp_path: Path) -> None:
+def test_resolve_subtitle_config_enabled(tmp_path: Path, monkeypatch) -> None:
     import argparse
+    import os
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
 
     args = argparse.Namespace(
         subtitle=True,
         subtitle_language="fr",
         subtitle_format="vtt",
-        subtitle_model="small",
-        subtitle_model_path=tmp_path / "whisper",
+        subtitle_api_key="sk-explicit",
+        subtitle_sidecar=True,
     )
 
     config = cli._resolve_subtitle_config(args)
@@ -834,8 +838,24 @@ def test_resolve_subtitle_config_enabled(tmp_path: Path) -> None:
     assert config.enabled is True
     assert config.language == "fr"
     assert config.format == "vtt"
-    assert config.model_size == "small"
-    assert config.model_path == tmp_path / "whisper"
+    assert config.api_key == "sk-explicit"
+    assert config.sidecar_only is True
+
+
+def test_resolve_subtitle_config_reads_api_key_from_env(monkeypatch) -> None:
+    import argparse
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-from-env")
+
+    args = argparse.Namespace(
+        subtitle=True,
+        subtitle_language=None,
+        subtitle_format="srt",
+        subtitle_api_key=None,
+        subtitle_sidecar=False,
+    )
+
+    config = cli._resolve_subtitle_config(args)
+    assert config.api_key == "sk-from-env"
 
 
 def test_main_passes_subtitle_to_process_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
