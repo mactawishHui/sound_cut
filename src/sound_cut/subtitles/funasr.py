@@ -38,14 +38,22 @@ def _http_json(
     headers: dict[str, str] | None = None,
     body: dict[str, Any] | None = None,
     timeout: int = 30,
+    retries: int = 5,
 ) -> dict[str, Any]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        raise MediaError(f"HTTP {exc.code} calling {url}: {exc.read().decode()[:200]}") from exc
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(retries):
+        req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            raise MediaError(f"HTTP {exc.code} calling {url}: {exc.read().decode()[:200]}") from exc
+        except (urllib.error.URLError, ConnectionResetError, TimeoutError, OSError) as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1 s, 2 s, 4 s, 8 s …
+    raise MediaError(f"Network error after {retries} attempts calling {url}: {last_exc}") from last_exc
 
 
 def _multipart_body(path: Path, field: str, extra_fields: dict[str, str] | None = None) -> tuple[bytes, str]:
@@ -208,14 +216,20 @@ class FunASRBackend:
     def _poll_task(self, task_id: str) -> list[dict[str, Any]]:
         url = _DASHSCOPE_TASK_URL.format(task_id=task_id)
         while True:
-            resp = _http_json(url, headers=self._auth_headers())
-            output = resp["output"]
-            status = output["task_status"]
-            if status == "SUCCEEDED":
-                return output["results"]
-            if status == "FAILED":
-                raise MediaError(f"FunASR task failed: {output}")
-            time.sleep(3)
+            try:
+                resp = _http_json(url, headers=self._auth_headers())
+                output = resp["output"]
+                status = output["task_status"]
+                if status == "SUCCEEDED":
+                    return output["results"]
+                if status == "FAILED":
+                    raise MediaError(f"FunASR task failed: {output}")
+            except MediaError as exc:
+                if "task failed" in str(exc):
+                    raise
+                # Transient network error during poll — log and keep waiting
+                pass
+            time.sleep(5)
 
     def transcribe(self, audio_path: Path) -> list[SubtitleSegment]:
         """Upload *audio_path*, run FunASR transcription, return timed segments."""
