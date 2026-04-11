@@ -931,11 +931,11 @@ def test_apply_subtitles_writes_srt_for_audio(
         output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
         return output_path
 
-    def fake_embed_subtitle_track(video_path, srt_path, output_path):
+    def fake_burn_subtitle_track(video_path, srt_path, output_path):
         embed_calls.append((video_path, srt_path, output_path))
 
     monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
-    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track", fake_embed_subtitle_track)
+    monkeypatch.setattr("sound_cut.editing.pipeline.burn_subtitle_track", fake_burn_subtitle_track)
 
     result = _apply_subtitles(
         rendered_path=audio_path,
@@ -962,12 +962,12 @@ def test_apply_subtitles_video_default_embeds_and_returns_none(
         generate_calls.append((output_path, config.format))
         return output_path
 
-    def fake_embed_subtitle_track(video_path_arg, srt_path, output_path):
+    def fake_burn_subtitle_track(video_path_arg, srt_path, output_path):
         output_path.write_bytes(b"video with subs")
         embed_calls.append((video_path_arg, srt_path, output_path))
 
     monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
-    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track", fake_embed_subtitle_track)
+    monkeypatch.setattr("sound_cut.editing.pipeline.burn_subtitle_track", fake_burn_subtitle_track)
 
     result = _apply_subtitles(
         rendered_path=video_path,
@@ -1003,7 +1003,7 @@ def test_apply_subtitles_sidecar_only_video_writes_srt_no_embed(
 
     monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
     monkeypatch.setattr(
-        "sound_cut.editing.pipeline.embed_subtitle_track",
+        "sound_cut.editing.pipeline.burn_subtitle_track",
         lambda *a: embed_calls.append(a),
     )
 
@@ -1032,12 +1032,12 @@ def test_apply_subtitles_video_vtt_format_embeds_srt_not_vtt(
         generate_calls.append(config.format)
         return output_path
 
-    def fake_embed_subtitle_track(video_path_arg, srt_path, output_path):
+    def fake_burn_subtitle_track(video_path_arg, srt_path, output_path):
         output_path.write_bytes(b"video with subs")
         embed_calls.append(srt_path)
 
     monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
-    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track", fake_embed_subtitle_track)
+    monkeypatch.setattr("sound_cut.editing.pipeline.burn_subtitle_track", fake_burn_subtitle_track)
 
     result = _apply_subtitles(
         rendered_path=video_path,

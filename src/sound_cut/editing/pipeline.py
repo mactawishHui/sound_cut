@@ -18,7 +18,7 @@ from sound_cut.core.models import (
 )
 from sound_cut.editing.timeline import build_edit_decision_list
 from sound_cut.enhancement.pipeline import enhance_audio
-from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media, embed_subtitle_track
+from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media, burn_subtitle_track
 from sound_cut.media.render import (
     render_audio_from_edl,
     render_full_audio,
@@ -50,10 +50,10 @@ def _apply_subtitles(
         with tempfile.TemporaryDirectory(prefix="sound-cut-subs-") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
             temp_srt = temp_dir / "subtitle.srt"
-            # ffmpeg mov_text/srt codecs require SRT — always generate SRT for embedding
+            # subtitles burn filter requires SRT format
             generate_subtitles(rendered_path, temp_srt, replace(subtitle_config, format="srt"))
             temp_with_subs = temp_dir / rendered_path.name
-            embed_subtitle_track(rendered_path, temp_srt, temp_with_subs)
+            burn_subtitle_track(rendered_path, temp_srt, temp_with_subs)
             shutil.move(str(temp_with_subs), str(rendered_path))
         return None
 

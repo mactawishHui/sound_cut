@@ -96,6 +96,7 @@ class SubtitleConfig:
     format: str = "srt"           # "srt" | "vtt"
     api_key: str | None = None    # DashScope API key for FunASR (or via DASHSCOPE_API_KEY env)
     sidecar_only: bool = False    # True = only write .srt sidecar, skip embedding in video
+    max_chars_per_subtitle: int = 25  # Split segments longer than this many chars (0 = disabled)
 
     def __post_init__(self) -> None:
         if self.format not in SUPPORTED_SUBTITLE_FORMATS:

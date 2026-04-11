@@ -252,3 +252,41 @@ def embed_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) ->
             str(output_path),
         ]
     )
+
+
+def burn_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> None:
+    """Hard-burn subtitles into the video frames (always visible in any player).
+
+    Requires a video re-encode.  Tries the macOS hardware H.264 encoder first
+    (h264_videotoolbox) and falls back to software libx264.
+    """
+    ffmpeg = _require_binary("ffmpeg")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Escape the SRT path for use inside an ffmpeg filtergraph.
+    # On POSIX systems only colons need escaping; backslashes are fine as-is.
+    srt_filter_path = str(srt_path.absolute()).replace("\\", "/").replace(":", "\\:")
+    vf = f"subtitles='{srt_filter_path}'"
+
+    # Codec candidates: macOS HW encoder first, then portable software encoder.
+    codec_candidates: list[list[str]] = [
+        ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+        ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],
+    ]
+    last_err: MediaError | None = None
+    for codec_args in codec_candidates:
+        cmd = [
+            ffmpeg, "-y", "-nostats", "-loglevel", "error",
+            "-i", str(video_path),
+            "-vf", vf,
+            *codec_args,
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+        try:
+            _run(cmd)
+            return
+        except MediaError as exc:
+            last_err = exc
+    raise last_err  # type: ignore[misc]

@@ -55,6 +55,12 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
                           help="DashScope API key (default: DASHSCOPE_API_KEY env var)")
         self.add_argument("--subtitle-sidecar", action="store_true",
                           help="Write .srt/.vtt sidecar file only; skip embedding in video")
+        self.add_argument(
+            "--subtitle-max-chars",
+            type=int,
+            default=25,
+            help="Split subtitle segments longer than this many characters (0 = disabled, default: 25)",
+        )
 
     def parse_args(self, args=None, namespace=None):
         argv = sys.argv[1:] if args is None else list(args)
@@ -124,6 +130,7 @@ def _resolve_subtitle_config(args: argparse.Namespace) -> SubtitleConfig:
         format=args.subtitle_format,
         api_key=api_key,
         sidecar_only=args.subtitle_sidecar,
+        max_chars_per_subtitle=args.subtitle_max_chars,
     )
 
 

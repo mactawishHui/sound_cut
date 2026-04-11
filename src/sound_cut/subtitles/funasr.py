@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import tempfile
 import time
@@ -12,6 +13,72 @@ from typing import Any
 
 from sound_cut.core.errors import MediaError
 from sound_cut.core.models import SubtitleConfig, SubtitleSegment
+
+# Punctuation that marks a good sentence-end break point (highest priority)
+_SENTENCE_END_RE = re.compile(r"[。？！；!?;]+")
+# Softer pause punctuation (fallback split point)
+_PAUSE_RE = re.compile(r"[，,、…]+")
+
+
+def _split_text(text: str, max_chars: int) -> list[str]:
+    """Split *text* into chunks of at most *max_chars* characters.
+
+    Prefers sentence-end punctuation as break points, then pause punctuation,
+    then a hard character-count split.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    while len(text) > max_chars:
+        # Search for the last sentence-ending punctuation within the window.
+        window = text[: max_chars + 1]
+        best: int | None = None
+        for m in _SENTENCE_END_RE.finditer(window):
+            best = m.end()
+        if best is None:
+            for m in _PAUSE_RE.finditer(window):
+                best = m.end()
+        if not best:
+            best = max_chars
+        chunks.append(text[:best])
+        text = text[best:]
+    if text:
+        chunks.append(text)
+    return [c for c in chunks if c.strip()]
+
+
+def _split_long_segments(
+    segments: list[SubtitleSegment], max_chars: int
+) -> list[SubtitleSegment]:
+    """Post-process *segments*: split any segment whose text exceeds *max_chars*.
+
+    Time is distributed proportionally to character count across the pieces.
+    """
+    if max_chars <= 0:
+        return segments
+
+    result: list[SubtitleSegment] = []
+    for seg in segments:
+        pieces = _split_text(seg.text, max_chars)
+        if len(pieces) <= 1:
+            result.append(seg)
+            continue
+        total_chars = sum(len(p) for p in pieces)
+        duration = seg.end_s - seg.start_s
+        t = seg.start_s
+        for piece in pieces:
+            piece_dur = duration * len(piece) / max(total_chars, 1)
+            result.append(
+                SubtitleSegment(index=0, start_s=t, end_s=t + piece_dur, text=piece.strip())
+            )
+            t += piece_dur
+
+    # Re-index globally (1-based)
+    return [
+        SubtitleSegment(index=i + 1, start_s=s.start_s, end_s=s.end_s, text=s.text)
+        for i, s in enumerate(result)
+    ]
 
 def _ssl_context() -> ssl.SSLContext:
     """Return an SSL context with a valid CA bundle (uses certifi when available)."""
@@ -197,6 +264,10 @@ class FunASRBackend:
         params: dict[str, Any] = {"channel_id": [0]}
         if self._config.language is not None:
             params["language_hints"] = [self._config.language]
+        # Ask the API to split sentences at shorter silences so each subtitle
+        # card covers less speech.  The parameter name used by DashScope FunASR
+        # is sentence_split_interval (milliseconds); unknown params are ignored.
+        params["sentence_split_interval"] = 300
         resp = _http_json(
             _DASHSCOPE_ASR_URL,
             method="POST",
@@ -255,7 +326,11 @@ class FunASRBackend:
             segments.extend(_parse_sentences(data))
 
         # Re-index globally (each file result starts from 1)
-        return [
+        segments = [
             SubtitleSegment(index=i + 1, start_s=s.start_s, end_s=s.end_s, text=s.text)
             for i, s in enumerate(segments)
         ]
+
+        # Post-process: split any segment whose text is too long.
+        segments = _split_long_segments(segments, self._config.max_chars_per_subtitle)
+        return segments
