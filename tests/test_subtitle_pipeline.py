@@ -145,3 +145,60 @@ def test_whisper_backend_omits_language_when_none(tmp_path):
 
     call_kwargs = mock_model.transcribe.call_args
     assert "language" not in call_kwargs.kwargs
+
+
+# --- generate_subtitles() tests ---
+
+from sound_cut.subtitles.pipeline import generate_subtitles
+
+
+def test_generate_subtitles_writes_srt_and_returns_path(tmp_path, monkeypatch) -> None:
+    audio = tmp_path / "audio.wav"
+    subtitle_path = tmp_path / "output.srt"
+    segments = [SubtitleSegment(index=1, start_s=0.0, end_s=2.0, text="Hello")]
+
+    monkeypatch.setattr(
+        "sound_cut.subtitles.pipeline.WhisperBackend.transcribe",
+        lambda self, path: segments,
+    )
+
+    result = generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True, format="srt"))
+
+    assert result == subtitle_path
+    assert subtitle_path.exists()
+    content = subtitle_path.read_text()
+    assert "Hello" in content
+    assert "00:00:00,000 --> 00:00:02,000" in content
+
+
+def test_generate_subtitles_writes_vtt_when_format_is_vtt(tmp_path, monkeypatch) -> None:
+    audio = tmp_path / "audio.wav"
+    subtitle_path = tmp_path / "output.vtt"
+    segments = [SubtitleSegment(index=1, start_s=0.0, end_s=1.5, text="Hi")]
+
+    monkeypatch.setattr(
+        "sound_cut.subtitles.pipeline.WhisperBackend.transcribe",
+        lambda self, path: segments,
+    )
+
+    result = generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True, format="vtt"))
+
+    assert result == subtitle_path
+    content = subtitle_path.read_text()
+    assert content.startswith("WEBVTT")
+    assert "Hi" in content
+
+
+def test_generate_subtitles_empty_segments_writes_empty_srt(tmp_path, monkeypatch) -> None:
+    audio = tmp_path / "audio.wav"
+    subtitle_path = tmp_path / "output.srt"
+
+    monkeypatch.setattr(
+        "sound_cut.subtitles.pipeline.WhisperBackend.transcribe",
+        lambda self, path: [],
+    )
+
+    generate_subtitles(audio, subtitle_path, SubtitleConfig(enabled=True))
+
+    assert subtitle_path.exists()
+    assert subtitle_path.read_text() == ""
