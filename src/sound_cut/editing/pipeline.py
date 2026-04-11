@@ -203,6 +203,10 @@ def process_audio(
     if loudness_config is None:
         loudness_config = LoudnessNormalizationConfig(enabled=False, target_lufs=DEFAULT_TARGET_LUFS)
 
+    render_video_output = (
+        original_source.has_video and output_path.suffix.lower() in _VIDEO_OUTPUT_SUFFIXES
+    )
+
     with tempfile.TemporaryDirectory(prefix="sound-cut-enhance-") as temp_dir_name:
         working_input_path = enhance_audio(
             input_path=input_path,
@@ -210,9 +214,6 @@ def process_audio(
             working_dir=Path(temp_dir_name),
         )
         processing_source = replace(original_source, input_path=working_input_path)
-        render_video_output = (
-            original_source.has_video and output_path.suffix.lower() in _VIDEO_OUTPUT_SUFFIXES
-        )
 
         if enable_cut:
             if render_video_output:
@@ -255,7 +256,7 @@ def process_audio(
         subtitle_path = _apply_subtitles(
             rendered_path=output_path,
             subtitle_config=subtitle,
-            has_video=original_source.has_video and output_path.suffix.lower() in _VIDEO_OUTPUT_SUFFIXES,
+            has_video=render_video_output,
         )
 
     return replace(summary, subtitle_path=subtitle_path)
