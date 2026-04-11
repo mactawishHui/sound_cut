@@ -66,3 +66,13 @@ def test_write_srt_uses_utf8_encoding(tmp_path: Path) -> None:
     srt_path = tmp_path / "out.srt"
     write_srt(segments, srt_path)
     assert "你好世界" in srt_path.read_text(encoding="utf-8")
+
+
+def test_write_srt_timestamp_near_second_boundary_does_not_overflow(tmp_path: Path) -> None:
+    # 1.9995 seconds: naive rounding of (seconds % 1) gives ms=1000 (bug)
+    segments = [SubtitleSegment(index=1, start_s=1.9995, end_s=2.0, text="x")]
+    srt_path = tmp_path / "out.srt"
+    write_srt(segments, srt_path)
+    content = srt_path.read_text(encoding="utf-8")
+    # Must not contain ",1000"
+    assert ",1000" not in content
