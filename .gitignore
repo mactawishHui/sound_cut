@@ -4,7 +4,6 @@
 
 # Python bytecode
 __pycache__/
-**/__pycache__/
 *.py[cod]
 *$py.class
 
@@ -31,3 +30,6 @@ htmlcov/
 
 # Claude Code local config (user-specific, not project-wide)
 .claude/
+
+docs/
+src/sound_cut.egg-info/
