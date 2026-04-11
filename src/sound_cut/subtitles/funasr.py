@@ -155,35 +155,70 @@ def _try_upload(path: Path, upload_url: str, field: str, extra: dict[str, str] |
         return resp.read().decode().strip()
 
 
+def _try_upload_with_retry(
+    path: Path,
+    upload_url: str,
+    field: str,
+    extra: dict[str, str] | None = None,
+    *,
+    retries: int = 3,
+) -> str:
+    """Call _try_upload up to *retries* times with exponential back-off."""
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(retries):
+        try:
+            return _try_upload(path, upload_url, field, extra)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1 s, 2 s …
+    raise last_exc
+
+
+def _parse_upload_url(raw: str) -> str | None:
+    """Return a public HTTPS URL from a raw upload response, or None."""
+    raw = raw.strip()
+    if raw.startswith("https://"):
+        return raw
+    # file.io returns JSON: {"success": true, "link": "https://..."}
+    try:
+        data = json.loads(raw)
+        link = data.get("link") or data.get("url") or ""
+        if str(link).startswith("https://"):
+            return str(link)
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return None
+
+
 def upload_audio_for_asr(path: Path) -> str:
     """Upload *path* to a public temporary host and return the download URL.
 
-    Tries multiple services in order; raises MediaError if all fail.
+    Tries multiple services in order (each with up to 3 retries); raises
+    MediaError only if every service fails all attempts.
     """
-    errors: list[str] = []
-
-    # 1. 0x0.st — POST multipart, max 512 MB, no account needed
-    try:
-        url = _try_upload(path, "https://0x0.st", field="file")
-        if url.startswith("https://"):
-            return url
-        errors.append(f"0x0.st: unexpected response: {url[:80]}")
-    except Exception as exc:
-        errors.append(f"0x0.st: {exc}")
-
-    # 2. litterbox.catbox.moe — POST multipart, 1-hour expiry, max 1 GB
-    try:
-        url = _try_upload(
-            path,
+    services = [
+        # (label, url, field, extra_fields)
+        ("0x0.st", "https://0x0.st", "file", None),
+        (
+            "litterbox",
             "https://litterbox.catbox.moe/resources/internals/api.php",
-            field="fileToUpload",
-            extra={"reqtype": "fileupload", "time": "1h"},
-        )
-        if url.startswith("https://"):
-            return url
-        errors.append(f"litterbox: unexpected response: {url[:80]}")
-    except Exception as exc:
-        errors.append(f"litterbox: {exc}")
+            "fileToUpload",
+            {"reqtype": "fileupload", "time": "1h"},
+        ),
+        ("file.io", "https://file.io/?expires=1h", "file", None),
+    ]
+
+    errors: list[str] = []
+    for label, url, field, extra in services:
+        try:
+            raw = _try_upload_with_retry(path, url, field, extra)
+            parsed = _parse_upload_url(raw)
+            if parsed:
+                return parsed
+            errors.append(f"{label}: unexpected response: {raw[:80]}")
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
 
     raise MediaError(
         "Failed to upload audio for ASR. All upload services failed:\n"
