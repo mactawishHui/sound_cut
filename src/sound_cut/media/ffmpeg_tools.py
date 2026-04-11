@@ -264,9 +264,15 @@ def burn_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Escape the SRT path for use inside an ffmpeg filtergraph.
-    # On POSIX systems only colons need escaping; backslashes are fine as-is.
-    srt_filter_path = str(srt_path.absolute()).replace("\\", "/").replace(":", "\\:")
-    vf = f"subtitles='{srt_filter_path}'"
+    # ffmpeg filter option values must NOT be wrapped in quotes; instead
+    # escape special chars: backslash → \\, colon → \:, single-quote → \'.
+    srt_filter_path = (
+        str(srt_path.absolute())
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+    )
+    vf = f"subtitles={srt_filter_path}"
 
     # Codec candidates: macOS HW encoder first, then portable software encoder.
     codec_candidates: list[list[str]] = [
