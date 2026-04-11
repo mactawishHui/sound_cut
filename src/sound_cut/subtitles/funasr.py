@@ -16,7 +16,6 @@ _DASHSCOPE_ASR_URL = (
     "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
 )
 _DASHSCOPE_TASK_URL = "https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
-_TRANSFER_SH_URL = "https://transfer.sh/{filename}"
 
 # Formats natively supported for audio extraction by the upload helper
 _VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm", ".flv"}
@@ -39,26 +38,72 @@ def _http_json(
         raise MediaError(f"HTTP {exc.code} calling {url}: {exc.read().decode()[:200]}") from exc
 
 
-def _upload_to_transfer_sh(path: Path) -> str:
-    """Upload *path* to transfer.sh and return the public download URL."""
-    url = _TRANSFER_SH_URL.format(filename=path.name)
+def _multipart_body(path: Path, field: str, extra_fields: dict[str, str] | None = None) -> tuple[bytes, str]:
+    """Build a multipart/form-data body; return (body_bytes, boundary_string)."""
+    boundary = f"SoundCutBoundary{int(time.time())}"
+    parts: list[bytes] = []
+    sep = f"--{boundary}\r\n".encode()
+    for name, value in (extra_fields or {}).items():
+        parts.append(sep)
+        parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
     with open(path, "rb") as f:
-        data = f.read()
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Max-Downloads": "1",
-            "Max-Days": "1",
-        },
-        method="PUT",
+        file_bytes = f.read()
+    parts.append(sep)
+    parts.append(
+        f'Content-Disposition: form-data; name="{field}"; filename="{path.name}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n".encode()
     )
+    parts.append(file_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(parts), boundary
+
+
+def _try_upload(path: Path, upload_url: str, field: str, extra: dict[str, str] | None = None) -> str:
+    body, boundary = _multipart_body(path, field, extra)
+    req = urllib.request.Request(
+        upload_url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        return resp.read().decode().strip()
+
+
+def upload_audio_for_asr(path: Path) -> str:
+    """Upload *path* to a public temporary host and return the download URL.
+
+    Tries multiple services in order; raises MediaError if all fail.
+    """
+    errors: list[str] = []
+
+    # 1. 0x0.st — POST multipart, max 512 MB, no account needed
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            return resp.read().decode().strip()
-    except urllib.error.HTTPError as exc:
-        raise MediaError(f"Upload to transfer.sh failed ({exc.code}): {exc.read().decode()[:200]}") from exc
+        url = _try_upload(path, "https://0x0.st", field="file")
+        if url.startswith("https://"):
+            return url
+        errors.append(f"0x0.st: unexpected response: {url[:80]}")
+    except Exception as exc:
+        errors.append(f"0x0.st: {exc}")
+
+    # 2. litterbox.catbox.moe — POST multipart, 1-hour expiry, max 1 GB
+    try:
+        url = _try_upload(
+            path,
+            "https://litterbox.catbox.moe/resources/internals/api.php",
+            field="fileToUpload",
+            extra={"reqtype": "fileupload", "time": "1h"},
+        )
+        if url.startswith("https://"):
+            return url
+        errors.append(f"litterbox: unexpected response: {url[:80]}")
+    except Exception as exc:
+        errors.append(f"litterbox: {exc}")
+
+    raise MediaError(
+        "Failed to upload audio for ASR. All upload services failed:\n"
+        + "\n".join(f"  • {e}" for e in errors)
+    )
 
 
 def _extract_audio(video_path: Path, temp_dir: Path) -> Path:
@@ -173,7 +218,7 @@ class FunASRBackend:
             else:
                 upload_path = audio_path
 
-            file_url = _upload_to_transfer_sh(upload_path)
+            file_url = upload_audio_for_asr(upload_path)
 
         task_id = self._submit_task(file_url)
         results = self._poll_task(task_id)

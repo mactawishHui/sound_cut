@@ -312,7 +312,7 @@ def test_funasr_backend_transcribe_full_flow(tmp_path, monkeypatch) -> None:
             def read(self): return json.dumps(fake_result_data).encode()
         return FakeResp()
 
-    monkeypatch.setattr("sound_cut.subtitles.funasr._upload_to_transfer_sh", fake_upload)
+    monkeypatch.setattr("sound_cut.subtitles.funasr.upload_audio_for_asr", fake_upload)
     monkeypatch.setattr("sound_cut.subtitles.funasr.FunASRBackend._submit_task", fake_submit)
     monkeypatch.setattr("sound_cut.subtitles.funasr.FunASRBackend._poll_task", fake_poll)
     monkeypatch.setattr("sound_cut.subtitles.funasr.urllib.request.urlopen", fake_urlopen)
