@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from sound_cut.core.errors import DependencyError
 from sound_cut.core.models import SubtitleConfig, SubtitleSegment
-
-if TYPE_CHECKING:
-    pass
 
 
 def _require_faster_whisper():
@@ -29,11 +25,11 @@ class WhisperBackend:
 
     def transcribe(self, audio_path: Path) -> list[SubtitleSegment]:
         fw = _require_faster_whisper()
-        model_kwargs: dict = {"model_size_or_path": self._config.model_size}
+        model_kwargs: dict[str, str] = {"model_size_or_path": self._config.model_size}
         if self._config.model_path is not None:
             model_kwargs["model_size_or_path"] = str(self._config.model_path)
         model = fw.WhisperModel(**model_kwargs)
-        transcribe_kwargs: dict = {"audio": str(audio_path)}
+        transcribe_kwargs: dict[str, str] = {"audio": str(audio_path)}
         if self._config.language is not None:
             transcribe_kwargs["language"] = self._config.language
         segments, _info = model.transcribe(**transcribe_kwargs)
