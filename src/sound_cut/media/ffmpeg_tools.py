@@ -272,7 +272,10 @@ def burn_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> 
         .replace(":", "\\:")
         .replace("'", "\\'")
     )
-    vf = f"subtitles={srt_filter_path}"
+    # The subtitles filter requires the explicit "filename=" key; passing a bare
+    # path (especially an absolute one) causes "No option name near '...'" because
+    # the filtergraph parser treats it as an unnamed flag instead of a key=value pair.
+    vf = f"subtitles=filename={srt_filter_path}"
 
     # Codec candidates: macOS HW encoder first, then portable software encoder.
     codec_candidates: list[list[str]] = [
