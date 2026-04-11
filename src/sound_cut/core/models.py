@@ -72,6 +72,27 @@ class EnhancementConfig:
             raise ValueError(f"profile must be one of {SUPPORTED_ENHANCEMENT_PROFILES!r}")
 
 
+SUPPORTED_SUBTITLE_FORMATS = ("srt", "vtt")
+SUPPORTED_SUBTITLE_MODELS = ("tiny", "base", "small", "medium", "large")
+
+
+@dataclass(frozen=True)
+class SubtitleSegment:
+    index: int        # 1-based, per SRT spec
+    start_s: float
+    end_s: float
+    text: str
+
+
+@dataclass(frozen=True)
+class SubtitleConfig:
+    enabled: bool
+    language: str | None = None      # None = faster-whisper auto-detect
+    format: str = "srt"              # "srt" | "vtt"
+    model_size: str = "base"         # tiny | base | small | medium | large
+    model_path: Path | None = None   # overrides HuggingFace cache dir
+
+
 @dataclass(frozen=True)
 class AnalysisTrack:
     name: str
@@ -112,3 +133,4 @@ class RenderSummary:
     output_duration_s: float
     removed_duration_s: float
     kept_segment_count: int
+    subtitle_path: Path | None = None
