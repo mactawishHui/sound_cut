@@ -42,8 +42,15 @@ def _apply_subtitles(
     generate_subtitles(rendered_path, subtitle_path, subtitle_config)
     if has_video:
         with tempfile.TemporaryDirectory(prefix="sound-cut-subs-") as temp_dir_name:
-            temp_with_subs = Path(temp_dir_name) / rendered_path.name
-            embed_subtitle_track(rendered_path, subtitle_path, temp_with_subs)
+            temp_dir = Path(temp_dir_name)
+            temp_with_subs = temp_dir / rendered_path.name
+            # ffmpeg mov_text/srt codecs require SRT input — convert VTT to SRT if needed
+            if subtitle_config.format == "vtt":
+                srt_for_embed = temp_dir / "subtitle_for_embed.srt"
+                generate_subtitles(rendered_path, srt_for_embed, replace(subtitle_config, format="srt"))
+                embed_subtitle_track(rendered_path, srt_for_embed, temp_with_subs)
+            else:
+                embed_subtitle_track(rendered_path, subtitle_path, temp_with_subs)
             shutil.move(str(temp_with_subs), str(rendered_path))
     return subtitle_path
 

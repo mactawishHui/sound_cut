@@ -980,3 +980,45 @@ def test_apply_subtitles_embeds_for_video(
     called_video, called_srt, _ = embed_calls[0]
     assert called_video == video_path
     assert called_srt == expected_srt_path
+
+
+def test_apply_subtitles_vtt_video_embeds_srt_not_vtt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When format=vtt + has_video, embed must use SRT (VTT is not valid for mov_text/srt codecs)."""
+    video_path = tmp_path / "output.mp4"
+    video_path.write_bytes(b"fake video content")
+    generate_calls: list = []
+    embed_calls: list = []
+
+    def fake_generate_subtitles(audio_path, output_path, config):
+        output_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n")
+        generate_calls.append((output_path, config.format))
+        return output_path
+
+    def fake_embed_subtitle_track(video_path_arg, srt_path, output_path):
+        output_path.write_bytes(b"video with subs")
+        embed_calls.append((video_path_arg, srt_path, output_path))
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
+    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track", fake_embed_subtitle_track)
+
+    result = _apply_subtitles(
+        rendered_path=video_path,
+        subtitle_config=SubtitleConfig(enabled=True, format="vtt"),
+        has_video=True,
+    )
+
+    # Sidecar should be VTT
+    assert result == video_path.with_suffix(".vtt")
+    assert result.exists()
+
+    # Embed must receive SRT, not VTT
+    assert len(embed_calls) == 1
+    _, embedded_srt, _ = embed_calls[0]
+    assert embedded_srt.suffix == ".srt"
+
+    # generate_subtitles called twice: once for vtt sidecar, once for srt embed
+    formats_generated = [fmt for _, fmt in generate_calls]
+    assert "vtt" in formats_generated
+    assert "srt" in formats_generated
