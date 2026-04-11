@@ -181,6 +181,7 @@ def test_main_processes_input_path_named_models(monkeypatch: pytest.MonkeyPatch,
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["input_path"] = input_path
         captured["enable_cut"] = enable_cut
@@ -225,6 +226,7 @@ def test_main_returns_1_and_prints_error_for_missing_input(tmp_path: Path, capsy
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         raise importlib.import_module("sound_cut.core").SoundCutError("missing.wav")
 
@@ -257,6 +259,7 @@ def test_main_passes_keep_temp_to_process_audio(monkeypatch: pytest.MonkeyPatch,
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["input_path"] = input_path
         captured["output_path"] = output_path
@@ -292,6 +295,7 @@ def test_main_passes_enhancement_config_to_process_audio(
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["enhancement"] = enhancement
         return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
@@ -340,6 +344,7 @@ def test_main_passes_enhance_only_mode_to_process_audio(
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["enable_cut"] = enable_cut
         captured["enhancement"] = enhancement
@@ -371,6 +376,7 @@ def test_main_infers_output_path_when_omitted(monkeypatch: pytest.MonkeyPatch, t
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["output_path"] = output_path
         return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
@@ -397,6 +403,7 @@ def test_main_prints_summary_for_successful_run(monkeypatch: pytest.MonkeyPatch,
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         return importlib.import_module("sound_cut.core").RenderSummary(12.3456, 7.89, 4.4556, 3)
 
@@ -460,6 +467,7 @@ def test_main_passes_default_loudness_config_to_process_audio(
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["loudness"] = loudness
         return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
@@ -492,6 +500,7 @@ def test_main_passes_auto_volume_only_with_cut_disabled(
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["enable_cut"] = enable_cut
         captured["loudness"] = loudness
@@ -526,6 +535,7 @@ def test_main_passes_disabled_loudness_config_by_default(
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["loudness"] = loudness
         return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
@@ -730,6 +740,7 @@ def test_main_passes_explicit_target_lufs_to_process_audio(
         loudness=None,
         enable_cut: bool = False,
         enhancement=None,
+        subtitle=None,
     ):
         captured["loudness"] = loudness
         return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
@@ -750,3 +761,111 @@ def test_main_passes_explicit_target_lufs_to_process_audio(
 
 def test_real_process_audio_signature_accepts_enhancement() -> None:
     assert "enhancement" in inspect.signature(real_process_audio).parameters
+
+
+def test_parse_args_subtitle_defaults(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args([str(tmp_path / "input.wav"), "--cut"])
+
+    assert args.subtitle is False
+    assert args.subtitle_format == "srt"
+    assert args.subtitle_model == "base"
+    assert args.subtitle_language is None
+    assert args.subtitle_model_path is None
+
+
+def test_parse_args_subtitle_sets_flags(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            str(tmp_path / "input.wav"),
+            "--subtitle",
+            "--subtitle-format",
+            "vtt",
+            "--subtitle-language",
+            "en",
+            "--subtitle-model",
+            "small",
+        ]
+    )
+
+    assert args.subtitle is True
+    assert args.subtitle_format == "vtt"
+    assert args.subtitle_language == "en"
+    assert args.subtitle_model == "small"
+
+
+def test_parse_args_subtitle_alone_is_valid(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args([str(tmp_path / "input.wav"), "--subtitle"])
+
+    assert args.subtitle is True
+    assert args.cut is False
+    assert args.auto_volume is False
+
+
+def test_parse_args_no_mode_selected_still_errors(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args([str(tmp_path / "input.wav")])
+
+    assert excinfo.value.code == 2
+
+
+def test_resolve_subtitle_config_enabled(tmp_path: Path) -> None:
+    import argparse
+
+    args = argparse.Namespace(
+        subtitle=True,
+        subtitle_language="fr",
+        subtitle_format="vtt",
+        subtitle_model="small",
+        subtitle_model_path=tmp_path / "whisper",
+    )
+
+    config = cli._resolve_subtitle_config(args)
+
+    from sound_cut.core.models import SubtitleConfig
+
+    assert config.enabled is True
+    assert config.language == "fr"
+    assert config.format == "vtt"
+    assert config.model_size == "small"
+    assert config.model_path == tmp_path / "whisper"
+
+
+def test_main_passes_subtitle_to_process_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_process_audio(
+        input_path: Path,
+        output_path: Path,
+        profile,
+        analyzer=None,
+        keep_temp: bool = False,
+        loudness=None,
+        enable_cut: bool = False,
+        enhancement=None,
+        subtitle=None,
+    ):
+        captured["subtitle"] = subtitle
+        return importlib.import_module("sound_cut.core").RenderSummary(1.0, 0.5, 0.5, 1)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sound_cut.editing.pipeline",
+        types.SimpleNamespace(process_audio=fake_process_audio),
+    )
+
+    exit_code = cli.main([str(tmp_path / "input.wav"), "--subtitle"])
+
+    from sound_cut.core.models import SubtitleConfig
+
+    assert exit_code == 0
+    subtitle = captured["subtitle"]
+    assert isinstance(subtitle, SubtitleConfig)
+    assert subtitle.enabled is True

@@ -7,14 +7,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from sound_cut.core import EnhancementConfig, SoundCutError, build_profile
-from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig
+from sound_cut.core.models import DEFAULT_TARGET_LUFS, LoudnessNormalizationConfig, SubtitleConfig
 from sound_cut.models.installer import import_model, install_model, model_install_state, verify_model
 from sound_cut.models.locator import locate_model_dir
 from sound_cut.models.registry import MODEL_REGISTRY
 
 _SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav", ".mp4"}
 _MODEL_COMMANDS = {"list", "install", "import", "verify"}
-_PROCESSING_MODE_FLAGS = {"--cut", "--auto-volume", "--enhance-speech"}
+_PROCESSING_MODE_FLAGS = {"--cut", "--auto-volume", "--enhance-speech", "--subtitle"}
 
 
 class _SoundCutArgumentParser(argparse.ArgumentParser):
@@ -43,6 +43,22 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
         )
         self.add_argument("--enhancer-profile", choices=("natural", "strong"), default="natural")
         self.add_argument("--model-path", type=Path)
+        self.add_argument("--subtitle", action="store_true")
+        self.add_argument(
+            "--subtitle-format",
+            choices=("srt", "vtt"),
+            default="srt",
+        )
+        self.add_argument(
+            "--subtitle-language",
+            default=None,
+        )
+        self.add_argument(
+            "--subtitle-model",
+            choices=("tiny", "base", "small", "medium", "large"),
+            default="base",
+        )
+        self.add_argument("--subtitle-model-path", type=Path)
 
     def parse_args(self, args=None, namespace=None):
         argv = sys.argv[1:] if args is None else list(args)
@@ -54,9 +70,9 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
                 return self._models_parser.parse_args(argv[1:], namespace)
 
         parsed_args = super().parse_args(argv, namespace)
-        if not parsed_args.cut and not parsed_args.auto_volume and not parsed_args.enhance_speech:
+        if not parsed_args.cut and not parsed_args.auto_volume and not parsed_args.enhance_speech and not parsed_args.subtitle:
             self.error(
-                "at least one processing mode is required: --cut, --auto-volume, and/or --enhance-speech"
+                "at least one processing mode is required: --cut, --auto-volume, --enhance-speech, and/or --subtitle"
             )
         if parsed_args.target_lufs is not None and not parsed_args.auto_volume:
             self.error("--target-lufs requires --auto-volume")
@@ -101,6 +117,16 @@ def _resolve_enhancement_config(args: argparse.Namespace) -> EnhancementConfig:
         backend=args.enhancer_backend,
         profile=args.enhancer_profile,
         model_path=args.model_path,
+    )
+
+
+def _resolve_subtitle_config(args: argparse.Namespace) -> SubtitleConfig:
+    return SubtitleConfig(
+        enabled=args.subtitle,
+        language=args.subtitle_language,
+        format=args.subtitle_format,
+        model_size=args.subtitle_model,
+        model_path=args.subtitle_model_path,
     )
 
 
@@ -184,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         loudness = _resolve_loudness_config(args)
         enhancement = _resolve_enhancement_config(args)
+        subtitle = _resolve_subtitle_config(args)
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
     profile = build_profile(args.aggressiveness)
@@ -206,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             loudness=loudness,
             enable_cut=args.cut,
             enhancement=enhancement,
+            subtitle=subtitle,
         )
     except SoundCutError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -215,4 +243,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"output_duration_s={summary.output_duration_s:.3f}")
     print(f"removed_duration_s={summary.removed_duration_s:.3f}")
     print(f"kept_segment_count={summary.kept_segment_count}")
+    if summary.subtitle_path is not None:
+        print(f"subtitle_path={summary.subtitle_path}")
     return 0
