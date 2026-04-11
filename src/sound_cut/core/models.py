@@ -83,6 +83,12 @@ class SubtitleSegment:
     end_s: float
     text: str
 
+    def __post_init__(self) -> None:
+        if self.index < 1:
+            raise ValueError("index must be >= 1 (SRT is 1-based)")
+        if self.end_s < self.start_s:
+            raise ValueError("end_s must be >= start_s")
+
 
 @dataclass(frozen=True)
 class SubtitleConfig:
@@ -91,6 +97,14 @@ class SubtitleConfig:
     format: str = "srt"              # "srt" | "vtt"
     model_size: str = "base"         # tiny | base | small | medium | large
     model_path: Path | None = None   # overrides HuggingFace cache dir
+
+    def __post_init__(self) -> None:
+        if self.format not in SUPPORTED_SUBTITLE_FORMATS:
+            raise ValueError(f"format must be one of {SUPPORTED_SUBTITLE_FORMATS!r}")
+        if self.model_size not in SUPPORTED_SUBTITLE_MODELS:
+            raise ValueError(f"model_size must be one of {SUPPORTED_SUBTITLE_MODELS!r}")
+        if self.model_path is not None and not isinstance(self.model_path, Path):
+            object.__setattr__(self, "model_path", Path(self.model_path))
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from sound_cut.core import EnhancementConfig, default_model_cache_dir
+from sound_cut.core.models import SubtitleConfig, SubtitleSegment, RenderSummary
 
 
 def test_enhancement_config_defaults() -> None:
@@ -66,9 +67,6 @@ def test_default_model_cache_dir_windows_falls_back_without_localappdata(
     assert default_model_cache_dir(platform_name="windows") == Path.home() / "AppData" / "Local" / "sound-cut" / "models"
 
 
-from sound_cut.core.models import SubtitleConfig, SubtitleSegment, RenderSummary
-
-
 def test_subtitle_segment_stores_fields() -> None:
     seg = SubtitleSegment(index=1, start_s=0.0, end_s=1.5, text="Hello")
     assert seg.index == 1
@@ -85,9 +83,24 @@ def test_subtitle_config_defaults() -> None:
     assert config.model_path is None
 
 
-def test_subtitle_config_disabled_by_default_fields() -> None:
-    config = SubtitleConfig(enabled=False)
-    assert config.enabled is False
+def test_subtitle_config_rejects_invalid_format() -> None:
+    with pytest.raises(ValueError, match="format must be one of"):
+        SubtitleConfig(enabled=True, format="invalid")
+
+
+def test_subtitle_config_rejects_invalid_model_size() -> None:
+    with pytest.raises(ValueError, match="model_size must be one of"):
+        SubtitleConfig(enabled=True, model_size="invalid")
+
+
+def test_subtitle_segment_rejects_zero_index() -> None:
+    with pytest.raises(ValueError, match="index must be >= 1"):
+        SubtitleSegment(index=0, start_s=0.0, end_s=1.0, text="x")
+
+
+def test_subtitle_segment_rejects_inverted_timestamps() -> None:
+    with pytest.raises(ValueError, match="end_s must be >= start_s"):
+        SubtitleSegment(index=1, start_s=2.0, end_s=1.0, text="x")
 
 
 def test_render_summary_subtitle_path_defaults_to_none() -> None:
@@ -101,7 +114,6 @@ def test_render_summary_subtitle_path_defaults_to_none() -> None:
 
 
 def test_render_summary_accepts_subtitle_path(tmp_path) -> None:
-    from pathlib import Path
     srt = tmp_path / "output.srt"
     summary = RenderSummary(
         input_duration_s=10.0,
