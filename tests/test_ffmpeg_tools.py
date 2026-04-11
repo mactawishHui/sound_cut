@@ -10,6 +10,7 @@ import sound_cut.media.ffmpeg_tools as ffmpeg_tools
 from sound_cut.core import MediaError, SourceMedia
 from sound_cut.media.ffmpeg_tools import (
     delivery_codec_for_suffix,
+    embed_subtitle_track,
     export_delivery_audio,
     normalize_loudness,
     normalize_audio_for_analysis,
@@ -453,3 +454,54 @@ def test_run_wraps_subprocess_errors_as_media_error(monkeypatch) -> None:
 
     with pytest.raises(MediaError, match="boom"):
         ffmpeg_tools._run(["ffmpeg"])
+
+
+def test_embed_subtitle_track_calls_ffmpeg_with_correct_args(monkeypatch, tmp_path) -> None:
+    video_path = tmp_path / "input.mp4"
+    srt_path = tmp_path / "subs.srt"
+    output_path = tmp_path / "output.mp4"
+    recorded_command: list[str] = []
+
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "_run",
+        lambda command: recorded_command.extend(command),
+    )
+
+    embed_subtitle_track(video_path, srt_path, output_path)
+
+    assert recorded_command[0] == "ffmpeg"
+    assert str(video_path) in recorded_command
+    assert str(srt_path) in recorded_command
+    assert "-c:s" in recorded_command
+    assert "mov_text" in recorded_command
+    assert str(output_path) == recorded_command[-1]
+
+
+def test_embed_subtitle_track_creates_parent_directory(monkeypatch, tmp_path) -> None:
+    video_path = tmp_path / "input.mp4"
+    srt_path = tmp_path / "subs.srt"
+    output_path = tmp_path / "nested" / "deep" / "output.mp4"
+
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(ffmpeg_tools, "_run", lambda command: None)
+
+    embed_subtitle_track(video_path, srt_path, output_path)
+
+    assert output_path.parent.exists()
+
+
+def test_embed_subtitle_track_propagates_media_error(monkeypatch, tmp_path) -> None:
+    video_path = tmp_path / "input.mp4"
+    srt_path = tmp_path / "subs.srt"
+    output_path = tmp_path / "output.mp4"
+
+    def raise_media_error(command):
+        raise MediaError("subtitle mux failed")
+
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(ffmpeg_tools, "_run", raise_media_error)
+
+    with pytest.raises(MediaError, match="subtitle mux failed"):
+        embed_subtitle_track(video_path, srt_path, output_path)

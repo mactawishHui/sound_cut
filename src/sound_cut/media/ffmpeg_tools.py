@@ -207,3 +207,28 @@ def export_delivery_audio(source_wav: Path, output_path: Path, source: SourceMed
         command.extend(["-f", "wav"])
     command.append(str(output_path))
     _run(command)
+
+
+def embed_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> None:
+    ffmpeg = _require_binary("ffmpeg")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            ffmpeg,
+            "-y",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-i",
+            str(srt_path),
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-c:s",
+            "mov_text",
+            str(output_path),
+        ]
+    )
