@@ -157,6 +157,19 @@ def normalize_loudness(source_wav: Path, output_wav: Path, *, target_lufs: float
     )
 
 
+def _subtitle_codec_for_suffix(suffix: str) -> str:
+    mapping = {
+        ".mp4": "mov_text",
+        ".mov": "mov_text",
+        ".m4v": "mov_text",
+        ".mkv": "srt",
+    }
+    try:
+        return mapping[suffix.lower()]
+    except KeyError as exc:
+        raise MediaError(f"Unsupported video container for subtitle embedding: {suffix}") from exc
+
+
 def delivery_codec_for_suffix(suffix: str) -> tuple[str, str | None]:
     mapping = {
         ".mp3": ("libmp3lame", "128k"),
@@ -212,6 +225,7 @@ def export_delivery_audio(source_wav: Path, output_path: Path, source: SourceMed
 def embed_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> None:
     ffmpeg = _require_binary("ffmpeg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    subtitle_codec = _subtitle_codec_for_suffix(output_path.suffix)
     _run(
         [
             ffmpeg,
@@ -228,7 +242,13 @@ def embed_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) ->
             "-c:a",
             "copy",
             "-c:s",
-            "mov_text",
+            subtitle_codec,
+            "-map",
+            "0:v",
+            "-map",
+            "0:a",
+            "-map",
+            "1:s",
             str(output_path),
         ]
     )

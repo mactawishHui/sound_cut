@@ -472,11 +472,34 @@ def test_embed_subtitle_track_calls_ffmpeg_with_correct_args(monkeypatch, tmp_pa
     embed_subtitle_track(video_path, srt_path, output_path)
 
     assert recorded_command[0] == "ffmpeg"
-    assert str(video_path) in recorded_command
-    assert str(srt_path) in recorded_command
+    first_i = recorded_command.index("-i")
+    second_i = recorded_command.index("-i", first_i + 1)
+    assert recorded_command[first_i + 1] == str(video_path)
+    assert recorded_command[second_i + 1] == str(srt_path)
     assert "-c:s" in recorded_command
     assert "mov_text" in recorded_command
+    assert "-map" in recorded_command
+    assert "0:v" in recorded_command
+    assert "1:s" in recorded_command
     assert str(output_path) == recorded_command[-1]
+
+
+def test_embed_subtitle_track_rejects_unsupported_container(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    with pytest.raises(MediaError, match="Unsupported video container"):
+        embed_subtitle_track(tmp_path / "input.mp4", tmp_path / "subs.srt", tmp_path / "output.avi")
+
+
+def test_embed_subtitle_track_uses_srt_codec_for_mkv(monkeypatch, tmp_path) -> None:
+    recorded_command: list[str] = []
+    monkeypatch.setattr(ffmpeg_tools, "_require_binary", lambda name: name)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "_run",
+        lambda command: recorded_command.extend(command),
+    )
+    embed_subtitle_track(tmp_path / "input.mkv", tmp_path / "subs.srt", tmp_path / "output.mkv")
+    assert "srt" in recorded_command
 
 
 def test_embed_subtitle_track_creates_parent_directory(monkeypatch, tmp_path) -> None:
