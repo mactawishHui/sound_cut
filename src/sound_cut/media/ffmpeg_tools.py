@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from sound_cut.core.errors import DependencyError, MediaError
@@ -254,48 +256,212 @@ def embed_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) ->
     )
 
 
+# ---------------------------------------------------------------------------
+# Subtitle burn-in helpers
+# ---------------------------------------------------------------------------
+
+_SRT_TS_RE = re.compile(
+    r"(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})"
+)
+
+
+def _srt_ts_to_s(ts: str) -> float:
+    ts = ts.replace(",", ".")
+    h, m, rest = ts.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(rest)
+
+
+def _parse_srt_file(srt_path: Path) -> list[tuple[float, float, str]]:
+    """Parse an SRT file into a list of (start_s, end_s, text) tuples."""
+    text = srt_path.read_text(encoding="utf-8", errors="replace")
+    segments: list[tuple[float, float, str]] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = block.strip().splitlines()
+        ts_match = next(
+            (m for line in lines for m in [_SRT_TS_RE.match(line.strip())] if m),
+            None,
+        )
+        if ts_match is None:
+            continue
+        ts_line = next(i for i, l in enumerate(lines) if _SRT_TS_RE.match(l.strip()))
+        sub_text = re.sub(r"<[^>]+>", "", " ".join(lines[ts_line + 1:])).strip()
+        if sub_text:
+            segments.append((_srt_ts_to_s(ts_match.group(1)), _srt_ts_to_s(ts_match.group(2)), sub_text))
+    return segments
+
+
+def _find_cjk_font() -> str | None:
+    """Return the first available CJK-capable font path, or None."""
+    candidates = [
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/Library/Fonts/Arial Unicode MS.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ]
+    return next((p for p in candidates if Path(p).exists()), None)
+
+
+def _get_video_wh(video_path: Path) -> tuple[int, int]:
+    """Return (width, height) of the first video stream."""
+    ffprobe = _require_binary("ffprobe")
+    result = _run([
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "json", str(video_path),
+    ])
+    data = json.loads(result.stdout)
+    stream = data["streams"][0]
+    return int(stream["width"]), int(stream["height"])
+
+
+def _burn_subtitles_pillow(
+    ffmpeg: str,
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    codec_candidates: list[list[str]],
+) -> None:
+    """Burn subtitles using Pillow image rendering + ffmpeg overlay.
+
+    Falls back to this when the local ffmpeg binary is not compiled with
+    ``--enable-libass`` (no ``subtitles`` filter available).
+    Requires the Pillow library (``pip install Pillow``).
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont  # type: ignore[import]
+    except ImportError:
+        raise MediaError(
+            "Burning subtitles requires either ffmpeg with --enable-libass "
+            "or the Pillow library. Install with: pip install Pillow"
+        )
+
+    segments = _parse_srt_file(srt_path)
+    if not segments:
+        raise MediaError("No subtitle segments found in SRT file for burning")
+
+    width, height = _get_video_wh(video_path)
+    duration_s = probe_source_media(video_path).duration_s
+
+    sub_h = max(60, height // 12)
+    font_size = max(20, height // 28)
+    font_path = _find_cjk_font()
+    try:
+        font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+
+    with tempfile.TemporaryDirectory(prefix="sound-cut-subtpng-") as tmp_name:
+        tmp = Path(tmp_name)
+
+        # Transparent blank image (shown when no subtitle is active)
+        blank = Image.new("RGBA", (width, sub_h), (0, 0, 0, 0))
+        blank_path = tmp / "blank.png"
+        blank.save(blank_path)
+
+        # One PNG per subtitle segment
+        for i, (_, _, text) in enumerate(segments):
+            img = Image.new("RGBA", (width, sub_h), (0, 0, 0, 160))
+            draw = ImageDraw.Draw(img)
+            try:
+                bbox = draw.textbbox((0, 0), text, font=font)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                tw, th = draw.textsize(text, font=font)  # type: ignore[attr-defined]
+            x, y = max(0.0, (width - tw) / 2), max(0.0, (sub_h - th) / 2)
+            for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 255))
+            draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+            img.save(tmp / f"sub_{i:04d}.png")
+
+        # Build ffmpeg concat script with correct per-segment durations
+        concat_lines: list[str] = []
+        prev_end = 0.0
+        for i, (start_s, end_s, _) in enumerate(segments):
+            gap = start_s - prev_end
+            if gap > 0.001:
+                concat_lines += [f"file '{blank_path}'", f"duration {gap:.3f}"]
+            sub_dur = max(0.001, end_s - start_s)
+            concat_lines += [f"file '{tmp / f'sub_{i:04d}.png'}'", f"duration {sub_dur:.3f}"]
+            prev_end = end_s
+        final_gap = duration_s - prev_end
+        if final_gap > 0.001:
+            concat_lines += [f"file '{blank_path}'", f"duration {final_gap:.3f}"]
+        # Concat demuxer needs the last file repeated to flush the final frame
+        last_file = next(l for l in reversed(concat_lines) if l.startswith("file "))
+        concat_lines.append(last_file)
+
+        concat_path = tmp / "subtitle_overlay.txt"
+        concat_path.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+
+        last_err: MediaError | None = None
+        for codec_args in codec_candidates:
+            try:
+                _run([
+                    ffmpeg, "-y", "-nostats", "-loglevel", "error",
+                    "-i", str(video_path),
+                    "-f", "concat", "-safe", "0", "-r", "25", "-i", str(concat_path),
+                    "-filter_complex",
+                    "[0:v][1:v]overlay=(W-w)/2:H-h-10:format=auto,format=yuv420p",
+                    *codec_args,
+                    "-c:a", "copy",
+                    "-movflags", "+faststart",
+                    str(output_path),
+                ])
+                return
+            except MediaError as exc:
+                last_err = exc
+        raise last_err  # type: ignore[misc]
+
+
 def burn_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> None:
     """Hard-burn subtitles into the video frames (always visible in any player).
 
-    Requires a video re-encode.  Tries the macOS hardware H.264 encoder first
-    (h264_videotoolbox) and falls back to software libx264.
+    Tries the ffmpeg ``subtitles`` filter first (requires libass).  If that
+    filter is not available in the local binary, falls back to a Pillow-based
+    image overlay (requires ``pip install Pillow``).  Uses h264_videotoolbox
+    for macOS hardware-accelerated re-encode, with libx264 as fallback.
     """
     ffmpeg = _require_binary("ffmpeg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Escape the SRT path for use inside an ffmpeg filtergraph.
-    # ffmpeg filter option values must NOT be wrapped in quotes; instead
-    # escape special chars: backslash → \\, colon → \:, single-quote → \'.
+    codec_candidates: list[list[str]] = [
+        ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+        ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],
+    ]
+
+    # --- Primary path: libass subtitles filter ---
     srt_filter_path = (
         str(srt_path.absolute())
         .replace("\\", "\\\\")
         .replace(":", "\\:")
         .replace("'", "\\'")
     )
-    # The subtitles filter requires the explicit "filename=" key; passing a bare
-    # path (especially an absolute one) causes "No option name near '...'" because
-    # the filtergraph parser treats it as an unnamed flag instead of a key=value pair.
     vf = f"subtitles=filename={srt_filter_path}"
 
-    # Codec candidates: macOS HW encoder first, then portable software encoder.
-    codec_candidates: list[list[str]] = [
-        ["-c:v", "h264_videotoolbox", "-q:v", "65"],
-        ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],
-    ]
+    use_pillow_fallback = False
     last_err: MediaError | None = None
     for codec_args in codec_candidates:
-        cmd = [
-            ffmpeg, "-y", "-nostats", "-loglevel", "error",
-            "-i", str(video_path),
-            "-vf", vf,
-            *codec_args,
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
         try:
-            _run(cmd)
+            _run([
+                ffmpeg, "-y", "-nostats", "-loglevel", "error",
+                "-i", str(video_path),
+                "-vf", vf, *codec_args,
+                "-c:a", "copy", "-movflags", "+faststart",
+                str(output_path),
+            ])
             return
         except MediaError as exc:
+            err_str = str(exc)
+            if "No such filter" in err_str or "Filter not found" in err_str:
+                use_pillow_fallback = True
+                break
             last_err = exc
-    raise last_err  # type: ignore[misc]
+
+    if last_err is not None and not use_pillow_fallback:
+        raise last_err
+
+    # --- Fallback: Pillow-based PNG overlay (no libass needed) ---
+    _burn_subtitles_pillow(ffmpeg, video_path, srt_path, output_path, codec_candidates)
