@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -13,18 +14,38 @@ from sound_cut.core.models import (
     LoudnessNormalizationConfig,
     RenderPlan,
     RenderSummary,
+    SubtitleConfig,
 )
 from sound_cut.editing.timeline import build_edit_decision_list
 from sound_cut.enhancement.pipeline import enhance_audio
-from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media
+from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media, embed_subtitle_track
 from sound_cut.media.render import (
     render_audio_from_edl,
     render_full_audio,
     render_full_video,
     render_video_from_edl,
 )
+from sound_cut.subtitles.pipeline import generate_subtitles
 
 _VIDEO_OUTPUT_SUFFIXES = {".mp4"}
+
+
+def _apply_subtitles(
+    rendered_path: Path,
+    subtitle_config: SubtitleConfig,
+    *,
+    has_video: bool,
+) -> Path:
+    """Transcribe rendered output and write/embed subtitle file. Returns subtitle file path."""
+    subtitle_suffix = f".{subtitle_config.format}"
+    subtitle_path = rendered_path.with_suffix(subtitle_suffix)
+    generate_subtitles(rendered_path, subtitle_path, subtitle_config)
+    if has_video:
+        with tempfile.TemporaryDirectory(prefix="sound-cut-subs-") as temp_dir_name:
+            temp_with_subs = Path(temp_dir_name) / rendered_path.name
+            embed_subtitle_track(rendered_path, subtitle_path, temp_with_subs)
+            shutil.move(str(temp_with_subs), str(rendered_path))
+    return subtitle_path
 
 
 def _refine_analysis_ranges(normalized_path: Path, analysis, profile: CutProfile):
@@ -165,6 +186,7 @@ def process_audio(
     keep_temp: bool = False,
     loudness: LoudnessNormalizationConfig | None = None,
     enhancement: EnhancementConfig | None = None,
+    subtitle: SubtitleConfig | None = None,
 ) -> RenderSummary:
     if input_path.resolve(strict=False) == output_path.resolve(strict=False):
         raise MediaError(f"Input and output paths must be different: {input_path}")
@@ -194,7 +216,7 @@ def process_audio(
 
         if enable_cut:
             if render_video_output:
-                return _process_cut_video(
+                summary = _process_cut_video(
                     input_path=working_input_path,
                     output_path=output_path,
                     profile=profile,
@@ -204,25 +226,36 @@ def process_audio(
                     keep_temp=keep_temp,
                     loudness=loudness_config,
                 )
-            return _process_cut_audio(
-                input_path=working_input_path,
-                output_path=output_path,
-                profile=profile,
-                source=processing_source,
-                analyzer=analyzer,
-                keep_temp=keep_temp,
-                loudness=loudness_config,
-            )
-
-        if render_video_output:
-            return render_full_video(
+            else:
+                summary = _process_cut_audio(
+                    input_path=working_input_path,
+                    output_path=output_path,
+                    profile=profile,
+                    source=processing_source,
+                    analyzer=analyzer,
+                    keep_temp=keep_temp,
+                    loudness=loudness_config,
+                )
+        elif render_video_output:
+            summary = render_full_video(
                 video_source=original_source,
                 audio_source=processing_source,
                 output_path=output_path,
                 loudness=loudness_config,
             )
-        return render_full_audio(
-            source=processing_source,
-            output_path=output_path,
-            loudness=loudness_config,
+        else:
+            summary = render_full_audio(
+                source=processing_source,
+                output_path=output_path,
+                loudness=loudness_config,
+            )
+
+    subtitle_path: Path | None = None
+    if subtitle is not None and subtitle.enabled:
+        subtitle_path = _apply_subtitles(
+            rendered_path=output_path,
+            subtitle_config=subtitle,
+            has_video=original_source.has_video and output_path.suffix.lower() in _VIDEO_OUTPUT_SUFFIXES,
         )
+
+    return replace(summary, subtitle_path=subtitle_path)

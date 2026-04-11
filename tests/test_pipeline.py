@@ -829,3 +829,154 @@ def test_process_audio_defaults_enable_cut_to_true_for_backward_compatibility(
 def test_loudness_normalization_config_rejects_non_finite_target_lufs(value: float) -> None:
     with pytest.raises(ValueError, match="target_lufs must be finite"):
         LoudnessNormalizationConfig(enabled=True, target_lufs=value)
+
+
+# --- subtitle integration tests ---
+
+from sound_cut.core.models import SubtitleConfig
+from sound_cut.editing.pipeline import _apply_subtitles
+
+
+def test_process_audio_subtitle_path_is_none_when_subtitle_not_enabled(
+    tmp_path: Path, ffmpeg_available
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(
+        input_path,
+        sample_rate_hz=16_000,
+        samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5),
+    )
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 0.5),))
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=True,
+        analyzer=analyzer,
+    )
+
+    assert summary.subtitle_path is None
+
+
+def test_process_audio_returns_subtitle_path_in_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    fake_subtitle_path = tmp_path / "output.srt"
+    fake_subtitle_path.write_text("fake srt content")
+
+    source = SourceMedia(
+        input_path=input_path,
+        duration_s=0.5,
+        audio_codec="pcm_s16le",
+        sample_rate_hz=16_000,
+        channels=1,
+        bit_rate_bps=256_000,
+    )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.probe_source_media", lambda _path: source)
+    monkeypatch.setattr(
+        "sound_cut.editing.pipeline.enhance_audio",
+        lambda *, input_path, enhancement, working_dir: input_path,
+    )
+
+    def fake_normalize_audio_for_analysis(source_path, normalized_path, *, sample_rate_hz):
+        write_pcm_wave(normalized_path, sample_rate_hz=sample_rate_hz, samples=tone_samples(sample_rate_hz=sample_rate_hz, duration_s=0.5))
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.normalize_audio_for_analysis", fake_normalize_audio_for_analysis)
+
+    def fake_apply_subtitles(rendered_path, subtitle_config, *, has_video):
+        return fake_subtitle_path
+
+    monkeypatch.setattr("sound_cut.editing.pipeline._apply_subtitles", fake_apply_subtitles)
+
+    def fake_render_audio_from_edl(plan) -> RenderSummary:
+        return RenderSummary(
+            input_duration_s=plan.source.duration_s,
+            output_duration_s=plan.source.duration_s,
+            removed_duration_s=0.0,
+            kept_segment_count=1,
+        )
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.render_audio_from_edl", fake_render_audio_from_edl)
+
+    analyzer = FakeSpeechAnalyzer((TimeRange(0.0, 0.5),))
+    subtitle_config = SubtitleConfig(enabled=True)
+
+    summary = process_audio(
+        input_path=input_path,
+        output_path=output_path,
+        profile=replace(build_profile("balanced"), merge_gap_ms=0, min_silence_ms=0, padding_ms=0),
+        enable_cut=True,
+        analyzer=analyzer,
+        subtitle=subtitle_config,
+    )
+
+    assert summary.subtitle_path == fake_subtitle_path
+
+
+def test_apply_subtitles_writes_srt_for_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio_path = tmp_path / "output.wav"
+    write_pcm_wave(audio_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.5))
+    expected_srt_path = audio_path.with_suffix(".srt")
+    embed_calls: list = []
+
+    def fake_generate_subtitles(audio_path, output_path, config):
+        output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+        return output_path
+
+    def fake_embed_subtitle_track(video_path, srt_path, output_path):
+        embed_calls.append((video_path, srt_path, output_path))
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
+    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track", fake_embed_subtitle_track)
+
+    result = _apply_subtitles(
+        rendered_path=audio_path,
+        subtitle_config=SubtitleConfig(enabled=True),
+        has_video=False,
+    )
+
+    assert result == expected_srt_path
+    assert expected_srt_path.exists()
+    assert embed_calls == []
+
+
+def test_apply_subtitles_embeds_for_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video_path = tmp_path / "output.mp4"
+    video_path.write_bytes(b"fake video content")
+    expected_srt_path = video_path.with_suffix(".srt")
+    embed_calls: list = []
+
+    def fake_generate_subtitles(audio_path, output_path, config):
+        output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+        return output_path
+
+    def fake_embed_subtitle_track(video_path_arg, srt_path, output_path):
+        # simulate writing to the temp output so shutil.move finds it
+        output_path.write_bytes(b"video with subs")
+        embed_calls.append((video_path_arg, srt_path, output_path))
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
+    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track", fake_embed_subtitle_track)
+
+    result = _apply_subtitles(
+        rendered_path=video_path,
+        subtitle_config=SubtitleConfig(enabled=True),
+        has_video=True,
+    )
+
+    assert result == expected_srt_path
+    assert expected_srt_path.exists()
+    assert len(embed_calls) == 1
+    called_video, called_srt, _ = embed_calls[0]
+    assert called_video == video_path
+    assert called_srt == expected_srt_path
