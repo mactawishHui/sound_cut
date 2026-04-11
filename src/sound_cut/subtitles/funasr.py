@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import tempfile
 import time
 import urllib.error
@@ -11,6 +12,15 @@ from typing import Any
 
 from sound_cut.core.errors import MediaError
 from sound_cut.core.models import SubtitleConfig, SubtitleSegment
+
+def _ssl_context() -> ssl.SSLContext:
+    """Return an SSL context with a valid CA bundle (uses certifi when available)."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
 
 _DASHSCOPE_ASR_URL = (
     "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
@@ -32,7 +42,7 @@ def _http_json(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         raise MediaError(f"HTTP {exc.code} calling {url}: {exc.read().decode()[:200]}") from exc
@@ -66,7 +76,7 @@ def _try_upload(path: Path, upload_url: str, field: str, extra: dict[str, str] |
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=300, context=_ssl_context()) as resp:
         return resp.read().decode().strip()
 
 
@@ -226,7 +236,7 @@ class FunASRBackend:
         segments: list[SubtitleSegment] = []
         for result in results:
             transcription_url = result["transcription_url"]
-            with urllib.request.urlopen(transcription_url, timeout=30) as resp:
+            with urllib.request.urlopen(transcription_url, timeout=30, context=_ssl_context()) as resp:
                 data = json.loads(resp.read())
             segments.extend(_parse_sentences(data))
 
