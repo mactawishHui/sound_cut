@@ -16,6 +16,7 @@ from sound_cut.models.registry import MODEL_REGISTRY
 _SUPPORTED_DELIVERY_SUFFIXES = {".mp3", ".m4a", ".wav", ".mp4"}
 _MODEL_COMMANDS = {"list", "install", "import", "verify"}
 _PROCESSING_MODE_FLAGS = {"--cut", "--auto-volume", "--enhance-speech", "--subtitle"}
+_SPECIAL_COMMANDS = {"models", "ui"}
 
 
 class _SoundCutArgumentParser(argparse.ArgumentParser):
@@ -39,10 +40,15 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enhance-speech", action="store_true")
         self.add_argument(
             "--enhancer-backend",
-            choices=("deepfilternet3", "resemble-enhance"),
+            choices=("deepfilternet3", "metricgan-plus", "demucs-vocals", "resemble-enhance"),
             default="deepfilternet3",
         )
         self.add_argument("--enhancer-profile", choices=("natural", "strong"), default="natural")
+        self.add_argument(
+            "--enhancer-fallback",
+            choices=("fail", "original", "deepfilternet3", "metricgan-plus"),
+            default="fail",
+        )
         self.add_argument("--model-path", type=Path)
         self.add_argument("--subtitle", action="store_true")
         self.add_argument(
@@ -80,12 +86,16 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
 
     def parse_args(self, args=None, namespace=None):
         argv = sys.argv[1:] if args is None else list(args)
-        if argv and argv[0] == "models":
+        if argv and argv[0] in _SPECIAL_COMMANDS:
             # Preserve the ability to process an input file literally named "models"
             # when explicit processing-mode flags are present.
             processing_mode_selected = any(flag in argv[1:] for flag in _PROCESSING_MODE_FLAGS)
             if not processing_mode_selected:
-                return self._models_parser.parse_args(argv[1:], namespace)
+                if argv[0] == "models":
+                    return self._models_parser.parse_args(argv[1:], namespace)
+                from sound_cut.web import build_ui_parser
+
+                return build_ui_parser().parse_args(argv[1:], namespace)
 
         parsed_args = super().parse_args(argv, namespace)
         if not parsed_args.cut and not parsed_args.auto_volume and not parsed_args.enhance_speech and not parsed_args.subtitle:
@@ -135,6 +145,7 @@ def _resolve_enhancement_config(args: argparse.Namespace) -> EnhancementConfig:
         backend=args.enhancer_backend,
         profile=args.enhancer_profile,
         model_path=args.model_path,
+        fallback=args.enhancer_fallback,
     )
 
 
@@ -233,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if getattr(args, "command", None) == "models":
         return _run_models_command(args)
+    if getattr(args, "command", None) == "ui":
+        from sound_cut.web import run_ui
+
+        return run_ui(host=args.host, port=args.port, debug=args.debug)
 
     try:
         loudness = _resolve_loudness_config(args)

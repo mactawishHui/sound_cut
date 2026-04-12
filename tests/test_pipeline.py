@@ -806,6 +806,76 @@ def test_enhance_audio_requires_backend_to_create_output(
         )
 
 
+def test_enhance_audio_falls_back_to_original_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.1))
+    enhancement = EnhancementConfig(enabled=True, backend="demucs-vocals", fallback="original")
+
+    class FakeEnhancer:
+        backend_name = "demucs-vocals"
+
+        def validate(self) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("sound_cut.enhancement.pipeline.select_enhancer", lambda config: FakeEnhancer())
+
+    resolved = enhance_audio(
+        input_path=input_path,
+        enhancement=enhancement,
+        working_dir=tmp_path / "work",
+    )
+
+    assert resolved == input_path
+
+
+def test_enhance_audio_falls_back_to_secondary_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.wav"
+    fallback_output = tmp_path / "work" / "enhanced.wav"
+    write_pcm_wave(input_path, sample_rate_hz=16_000, samples=tone_samples(sample_rate_hz=16_000, duration_s=0.1))
+    enhancement = EnhancementConfig(enabled=True, backend="demucs-vocals", fallback="deepfilternet3")
+
+    class PrimaryEnhancer:
+        backend_name = "demucs-vocals"
+
+        def validate(self) -> None:
+            raise RuntimeError("boom")
+
+    class FallbackEnhancer:
+        backend_name = "deepfilternet3"
+
+        def validate(self) -> None:
+            return None
+
+        def enhance(self, input_path: Path, output_path: Path) -> None:
+            assert input_path.name == "input.wav"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"enhanced")
+
+    def fake_select_enhancer(config: EnhancementConfig):
+        if config.backend == "demucs-vocals":
+            return PrimaryEnhancer()
+        if config.backend == "deepfilternet3":
+            assert config.model_path is None
+            assert config.fallback == "fail"
+            return FallbackEnhancer()
+        raise AssertionError(config.backend)
+
+    monkeypatch.setattr("sound_cut.enhancement.pipeline.select_enhancer", fake_select_enhancer)
+
+    resolved = enhance_audio(
+        input_path=input_path,
+        enhancement=enhancement,
+        working_dir=tmp_path / "work",
+    )
+
+    assert resolved == fallback_output
+    assert resolved.read_bytes() == b"enhanced"
+
+
 def test_process_audio_defaults_enable_cut_to_true_for_backward_compatibility(
     tmp_path: Path, ffmpeg_available
 ) -> None:

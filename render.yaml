@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: soundcut
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DASHSCOPE_API_KEY
+        sync: false        # 在 Render 控制台手动填入，不提交到 git
+    healthCheckPath: /api/jobs

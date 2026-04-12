@@ -7,7 +7,8 @@ from types import MappingProxyType
 from typing import Literal, Mapping
 
 DEFAULT_TARGET_LUFS = -16.0
-SUPPORTED_ENHANCEMENT_BACKENDS = ("deepfilternet3", "resemble-enhance")
+SUPPORTED_ENHANCEMENT_BACKENDS = ("deepfilternet3", "metricgan-plus", "demucs-vocals", "resemble-enhance")
+SUPPORTED_ENHANCEMENT_FALLBACKS = ("fail", "original", "deepfilternet3", "metricgan-plus")
 SUPPORTED_ENHANCEMENT_PROFILES = ("natural", "strong")
 
 
@@ -62,12 +63,15 @@ class EnhancementConfig:
     backend: str = "deepfilternet3"
     profile: str = "natural"
     model_path: Path | None = None
+    fallback: str = "fail"
 
     def __post_init__(self) -> None:
         if self.model_path is not None and not isinstance(self.model_path, Path):
             object.__setattr__(self, "model_path", Path(self.model_path))
         if self.backend not in SUPPORTED_ENHANCEMENT_BACKENDS:
             raise ValueError(f"backend must be one of {SUPPORTED_ENHANCEMENT_BACKENDS!r}")
+        if self.fallback not in SUPPORTED_ENHANCEMENT_FALLBACKS:
+            raise ValueError(f"fallback must be one of {SUPPORTED_ENHANCEMENT_FALLBACKS!r}")
         if self.profile not in SUPPORTED_ENHANCEMENT_PROFILES:
             raise ValueError(f"profile must be one of {SUPPORTED_ENHANCEMENT_PROFILES!r}")
 

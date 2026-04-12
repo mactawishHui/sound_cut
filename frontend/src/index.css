@@ -1,0 +1,86 @@
+/* ── Reset & base ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:           #F5F2EA;
+  --bg2:          #EDE9DF;
+  --surface:      #FDFCF8;
+  --surface2:     #F8F5EF;
+  --ink:          #17140F;
+  --ink2:         #3A3630;
+  --muted:        rgba(23,20,15,0.48);
+  --dim:          rgba(23,20,15,0.26);
+  --border:       rgba(23,20,15,0.09);
+  --border-s:     rgba(23,20,15,0.16);
+
+  --blue:         #1D4ED8;
+  --blue-dim:     rgba(29,78,216,0.08);
+  --blue-border:  rgba(29,78,216,0.22);
+  --blue-glow:    rgba(29,78,216,0.14);
+
+  --green:        #059669;
+  --green-dim:    rgba(5,150,105,0.08);
+  --green-border: rgba(5,150,105,0.22);
+
+  --red:          #DC2626;
+  --red-dim:      rgba(220,38,38,0.08);
+  --red-border:   rgba(220,38,38,0.20);
+
+  --amber:        #D97706;
+
+  --radius:       14px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 3px rgba(23,20,15,0.08), 0 4px 16px rgba(23,20,15,0.05);
+  --shadow-lg:    0 8px 32px rgba(23,20,15,0.12);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: "Bricolage Grotesque", "Noto Sans SC", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+}
+
+/* Paper texture */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.022'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Keyframes ────────────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes bar-bounce {
+  0%, 100% { transform: scaleY(0.25); }
+  50%       { transform: scaleY(1.0); }
+}
+
+@keyframes progress-stripe {
+  0%   { background-position: 0 0; }
+  100% { background-position: 40px 0; }
+}

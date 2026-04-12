@@ -37,17 +37,20 @@ def test_build_parser_parses_enhancement_flags(tmp_path: Path) -> None:
             "--cut",
             "--enhance-speech",
             "--enhancer-backend",
-            "resemble-enhance",
+            "demucs-vocals",
             "--enhancer-profile",
             "strong",
+            "--enhancer-fallback",
+            "original",
             "--model-path",
             str(tmp_path / "models"),
         ]
     )
 
     assert args.enhance_speech is True
-    assert args.enhancer_backend == "resemble-enhance"
+    assert args.enhancer_backend == "demucs-vocals"
     assert args.enhancer_profile == "strong"
+    assert args.enhancer_fallback == "original"
     assert args.model_path == tmp_path / "models"
 
 
@@ -60,6 +63,16 @@ def test_build_parser_parses_model_list_subcommand() -> None:
     assert args.models_command == "list"
 
 
+def test_build_parser_parses_ui_subcommand() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["ui", "--host", "0.0.0.0", "--port", "9999"])
+
+    assert args.command == "ui"
+    assert args.host == "0.0.0.0"
+    assert args.port == 9999
+
+
 def test_build_parser_defaults_enhancement_flags(tmp_path: Path) -> None:
     parser = cli.build_parser()
 
@@ -68,6 +81,7 @@ def test_build_parser_defaults_enhancement_flags(tmp_path: Path) -> None:
     assert args.enhance_speech is False
     assert args.enhancer_backend == "deepfilternet3"
     assert args.enhancer_profile == "natural"
+    assert args.enhancer_fallback == "fail"
     assert args.model_path is None
 
 
@@ -314,9 +328,11 @@ def test_main_passes_enhancement_config_to_process_audio(
             "--cut",
             "--enhance-speech",
             "--enhancer-backend",
-            "resemble-enhance",
+            "demucs-vocals",
             "--enhancer-profile",
             "strong",
+            "--enhancer-fallback",
+            "original",
             "--model-path",
             str(tmp_path / "models"),
         ]
@@ -325,8 +341,9 @@ def test_main_passes_enhancement_config_to_process_audio(
     enhancement = captured["enhancement"]
     assert exit_code == 0
     assert enhancement.enabled is True
-    assert enhancement.backend == "resemble-enhance"
+    assert enhancement.backend == "demucs-vocals"
     assert enhancement.profile == "strong"
+    assert enhancement.fallback == "original"
     assert enhancement.model_path == tmp_path / "models"
 
 
@@ -560,6 +577,8 @@ def test_main_models_list_prints_registered_backends(capsys: pytest.CaptureFixtu
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "deepfilternet3" in captured.out
+    assert "metricgan-plus" in captured.out
+    assert "demucs-vocals" in captured.out
     assert "resemble-enhance" in captured.out
 
 

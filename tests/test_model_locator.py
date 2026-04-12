@@ -21,6 +21,6 @@ def test_locate_model_dir_uses_backend_specific_default_cache_dir(
 ) -> None:
     monkeypatch.setattr(locator, "default_model_cache_dir", lambda: tmp_path / "cache")
 
-    resolved = locator.locate_model_dir("resemble-enhance")
+    resolved = locator.locate_model_dir("demucs-vocals")
 
-    assert resolved == tmp_path / "cache" / "resemble-enhance"
+    assert resolved == tmp_path / "cache" / "demucs-vocals"

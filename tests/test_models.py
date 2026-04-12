@@ -15,12 +15,14 @@ def test_enhancement_config_defaults() -> None:
     assert config.backend == "deepfilternet3"
     assert config.profile == "natural"
     assert config.model_path is None
+    assert config.fallback == "fail"
 
 
 @pytest.mark.parametrize(
     ("field_name", "kwargs"),
     [
         ("backend", {"backend": "unknown"}),
+        ("fallback", {"fallback": "unknown"}),
         ("profile", {"profile": "unknown"}),
     ],
 )
@@ -30,10 +32,11 @@ def test_enhancement_config_rejects_unsupported_values(field_name: str, kwargs: 
 
 
 def test_enhancement_config_accepts_requested_backend_and_profile_values() -> None:
-    config = EnhancementConfig(enabled=True, backend="resemble-enhance", profile="strong")
+    config = EnhancementConfig(enabled=True, backend="demucs-vocals", profile="strong", fallback="original")
 
-    assert config.backend == "resemble-enhance"
+    assert config.backend == "demucs-vocals"
     assert config.profile == "strong"
+    assert config.fallback == "original"
 
 
 def test_enhancement_config_normalizes_model_path_to_path() -> None:
