@@ -166,6 +166,14 @@ def _try_upload(
         return resp.read().decode().strip()
 
 
+def _is_ssl_like_error(exc: Exception) -> bool:
+    """Return True if the exception looks like an SSL/TLS connectivity problem."""
+    msg = str(exc).lower()
+    return any(k in msg for k in (
+        "ssl", "certificate", "handshake", "eof occurred", "protocol",
+    ))
+
+
 def _try_upload_with_retry(
     path: Path,
     upload_url: str,
@@ -174,19 +182,24 @@ def _try_upload_with_retry(
     *,
     retries: int = 3,
 ) -> str:
-    """Call _try_upload up to *retries* times; on SSL errors also retry without cert check."""
+    """Call _try_upload up to *retries* times.
+
+    For SSL / TLS errors (which urllib wraps in URLError), automatically
+    retries with certificate verification disabled as a last resort.
+    """
     last_exc: Exception = RuntimeError("unreachable")
     for attempt in range(retries):
-        for insecure in (False, True):
-            try:
-                return _try_upload(path, upload_url, field, extra, insecure=insecure)
-            except ssl.SSLError as exc:
-                last_exc = exc
-                if insecure:
-                    break  # Both secure and insecure failed; try next attempt
-            except Exception as exc:
-                last_exc = exc
-                break  # Non-SSL error; skip insecure retry
+        # First try with normal cert verification.
+        try:
+            return _try_upload(path, upload_url, field, extra, insecure=False)
+        except Exception as exc:
+            last_exc = exc
+            # If it looks like an SSL problem, retry immediately without cert check.
+            if _is_ssl_like_error(exc):
+                try:
+                    return _try_upload(path, upload_url, field, extra, insecure=True)
+                except Exception as exc2:
+                    last_exc = exc2
         if attempt < retries - 1:
             time.sleep(2 ** attempt)
     raise last_exc
@@ -216,12 +229,27 @@ def _parse_upload_url(raw: str) -> str | None:
     return None
 
 
+def _urlopen_resilient(req: urllib.request.Request, timeout: int = 15) -> bytes:
+    """urlopen with automatic insecure fallback on SSL errors."""
+    for insecure in (False, True):
+        ctx = ssl.create_default_context() if insecure else _ssl_context()
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                return r.read()
+        except Exception as exc:
+            if insecure or not _is_ssl_like_error(exc):
+                raise
+    raise RuntimeError("unreachable")
+
+
 def _upload_to_gofile(path: Path) -> str:
     """Upload to gofile.io (two-step: get server, then upload)."""
     # Step 1: get the best available server
     srv_req = urllib.request.Request("https://api.gofile.io/servers", method="GET")
-    with urllib.request.urlopen(srv_req, timeout=15, context=_ssl_context()) as r:
-        srv_data = json.loads(r.read())
+    srv_data = json.loads(_urlopen_resilient(srv_req, timeout=15))
     server = srv_data["data"]["servers"][0]["name"]
     upload_url = f"https://{server}.gofile.io/contents/uploadfile"
     raw = _try_upload_with_retry(path, upload_url, "file")
