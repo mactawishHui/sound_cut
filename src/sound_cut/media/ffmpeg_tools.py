@@ -475,26 +475,49 @@ def _detect_video_codec(video_path: Path) -> str | None:
         return None
 
 
+def _probe_video_bitrate(video_path: Path) -> int | None:
+    """Return the video stream bitrate in bits/s, or None if unavailable."""
+    try:
+        ffprobe = _require_binary("ffprobe")
+        result = _run([
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=bit_rate",
+            "-of", "json", str(video_path),
+        ])
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        br = streams[0].get("bit_rate") if streams else None
+        return int(br) if br and str(br).isdigit() else None
+    except Exception:
+        return None
+
+
 def _codec_candidates_for_video(video_path: Path) -> list[list[str]]:
     """Return ffmpeg codec arg lists to try in order.
 
     Prefer matching the source codec so the output size stays close to
-    the original.  HEVC source → HEVC first; anything else → H.264 first.
-    Always include both as fallbacks.
+    the original.  Target bitrate is set to match the source so the
+    re-encoded file stays the same size.
     """
     src_codec = _detect_video_codec(video_path) or ""
+    src_br = _probe_video_bitrate(video_path)
+    # Add 5 % headroom for subtitle overlay pixels; fall back to 800 k if unknown.
+    target_br = f"{int((src_br or 800_000) * 1.05)}k" if src_br else "800k"
+    # Strip the trailing 'k' unit — ffmpeg accepts plain integers too
+    target_br_val = str(int(float(target_br.rstrip("k")) * 1000)) if target_br.endswith("k") else target_br
+
     if src_codec in ("hevc", "h265"):
         return [
-            ["-c:v", "hevc_videotoolbox", "-q:v", "65"],   # macOS HW HEVC
-            ["-c:v", "libx265", "-crf", "24", "-preset", "fast"],  # SW HEVC
-            ["-c:v", "h264_videotoolbox", "-q:v", "65"],   # macOS HW H.264
-            ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],  # SW H.264
+            ["-c:v", "hevc_videotoolbox", "-b:v", target_br_val],   # macOS HW HEVC
+            ["-c:v", "libx265", "-b:v", target_br_val, "-preset", "fast"],  # SW HEVC
+            ["-c:v", "h264_videotoolbox", "-b:v", target_br_val],   # macOS HW H.264
+            ["-c:v", "libx264", "-b:v", target_br_val, "-preset", "fast"],  # SW H.264
         ]
     return [
-        ["-c:v", "h264_videotoolbox", "-q:v", "65"],
-        ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],
-        ["-c:v", "hevc_videotoolbox", "-q:v", "65"],
-        ["-c:v", "libx265", "-crf", "24", "-preset", "fast"],
+        ["-c:v", "h264_videotoolbox", "-b:v", target_br_val],
+        ["-c:v", "libx264", "-b:v", target_br_val, "-preset", "fast"],
+        ["-c:v", "hevc_videotoolbox", "-b:v", target_br_val],
+        ["-c:v", "libx265", "-b:v", target_br_val, "-preset", "fast"],
     ]
 
 
