@@ -143,7 +143,14 @@ def _multipart_body(path: Path, field: str, extra_fields: dict[str, str] | None 
     return b"".join(parts), boundary
 
 
-def _try_upload(path: Path, upload_url: str, field: str, extra: dict[str, str] | None = None) -> str:
+def _try_upload(
+    path: Path,
+    upload_url: str,
+    field: str,
+    extra: dict[str, str] | None = None,
+    *,
+    insecure: bool = False,
+) -> str:
     body, boundary = _multipart_body(path, field, extra)
     req = urllib.request.Request(
         upload_url,
@@ -151,7 +158,11 @@ def _try_upload(path: Path, upload_url: str, field: str, extra: dict[str, str] |
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=300, context=_ssl_context()) as resp:
+    ctx = ssl.create_default_context() if insecure else _ssl_context()
+    if insecure:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
         return resp.read().decode().strip()
 
 
@@ -163,42 +174,75 @@ def _try_upload_with_retry(
     *,
     retries: int = 3,
 ) -> str:
-    """Call _try_upload up to *retries* times with exponential back-off."""
+    """Call _try_upload up to *retries* times; on SSL errors also retry without cert check."""
     last_exc: Exception = RuntimeError("unreachable")
     for attempt in range(retries):
-        try:
-            return _try_upload(path, upload_url, field, extra)
-        except Exception as exc:
-            last_exc = exc
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # 1 s, 2 s …
+        for insecure in (False, True):
+            try:
+                return _try_upload(path, upload_url, field, extra, insecure=insecure)
+            except ssl.SSLError as exc:
+                last_exc = exc
+                if insecure:
+                    break  # Both secure and insecure failed; try next attempt
+            except Exception as exc:
+                last_exc = exc
+                break  # Non-SSL error; skip insecure retry
+        if attempt < retries - 1:
+            time.sleep(2 ** attempt)
     raise last_exc
 
 
 def _parse_upload_url(raw: str) -> str | None:
-    """Return a public HTTPS URL from a raw upload response, or None."""
+    """Return a public HTTPS/HTTP URL from a raw upload response, or None."""
     raw = raw.strip()
-    if raw.startswith("https://"):
+    if raw.startswith("https://") or raw.startswith("http://"):
         return raw
-    # file.io returns JSON: {"success": true, "link": "https://..."}
+    # JSON responses: file.io {"link": "..."}, gofile.io {"data": {"downloadPage": ..., "link": ...}}
     try:
         data = json.loads(raw)
-        link = data.get("link") or data.get("url") or ""
-        if str(link).startswith("https://"):
-            return str(link)
+        # gofile.io: {"status": "ok", "data": {"link": "https://..."}}
+        if isinstance(data.get("data"), dict):
+            for key in ("link", "downloadPage", "url"):
+                v = data["data"].get(key, "")
+                if str(v).startswith("http"):
+                    return str(v)
+        # flat JSON: {"link": "...", "url": "...", "success": true}
+        for key in ("link", "url", "download_url"):
+            v = data.get(key, "")
+            if str(v).startswith("http"):
+                return str(v)
     except (json.JSONDecodeError, AttributeError):
         pass
     return None
 
 
+def _upload_to_gofile(path: Path) -> str:
+    """Upload to gofile.io (two-step: get server, then upload)."""
+    # Step 1: get the best available server
+    srv_req = urllib.request.Request("https://api.gofile.io/servers", method="GET")
+    with urllib.request.urlopen(srv_req, timeout=15, context=_ssl_context()) as r:
+        srv_data = json.loads(r.read())
+    server = srv_data["data"]["servers"][0]["name"]
+    upload_url = f"https://{server}.gofile.io/contents/uploadfile"
+    raw = _try_upload_with_retry(path, upload_url, "file")
+    data = json.loads(raw)
+    if data.get("status") == "ok":
+        link = data["data"].get("downloadPage") or data["data"].get("link", "")
+        if link.startswith("http"):
+            return link
+    raise MediaError(f"gofile.io unexpected response: {raw[:120]}")
+
+
 def upload_audio_for_asr(path: Path) -> str:
     """Upload *path* to a public temporary host and return the download URL.
 
-    Tries multiple services in order (each with up to 3 retries); raises
+    Tries multiple services in order (each with retries + SSL fallback); raises
     MediaError only if every service fails all attempts.
     """
-    services = [
-        # (label, url, field, extra_fields)
+    errors: list[str] = []
+
+    # --- Simple multipart POST services ---
+    simple_services = [
         ("0x0.st", "https://0x0.st", "file", None),
         (
             "litterbox",
@@ -208,9 +252,7 @@ def upload_audio_for_asr(path: Path) -> str:
         ),
         ("file.io", "https://file.io/?expires=1h", "file", None),
     ]
-
-    errors: list[str] = []
-    for label, url, field, extra in services:
+    for label, url, field, extra in simple_services:
         try:
             raw = _try_upload_with_retry(path, url, field, extra)
             parsed = _parse_upload_url(raw)
@@ -219,6 +261,12 @@ def upload_audio_for_asr(path: Path) -> str:
             errors.append(f"{label}: unexpected response: {raw[:80]}")
         except Exception as exc:
             errors.append(f"{label}: {exc}")
+
+    # --- gofile.io (two-step, separate implementation) ---
+    try:
+        return _upload_to_gofile(path)
+    except Exception as exc:
+        errors.append(f"gofile.io: {exc}")
 
     raise MediaError(
         "Failed to upload audio for ASR. All upload services failed:\n"
