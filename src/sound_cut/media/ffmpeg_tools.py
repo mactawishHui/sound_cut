@@ -460,21 +460,58 @@ def _burn_subtitles_pillow(
         raise last_err  # type: ignore[misc]
 
 
+def _detect_video_codec(video_path: Path) -> str | None:
+    """Return the codec_name of the first video stream, or None."""
+    try:
+        ffprobe = _require_binary("ffprobe")
+        result = _run([
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name", "-of", "json", str(video_path),
+        ])
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        return streams[0].get("codec_name") if streams else None
+    except Exception:
+        return None
+
+
+def _codec_candidates_for_video(video_path: Path) -> list[list[str]]:
+    """Return ffmpeg codec arg lists to try in order.
+
+    Prefer matching the source codec so the output size stays close to
+    the original.  HEVC source → HEVC first; anything else → H.264 first.
+    Always include both as fallbacks.
+    """
+    src_codec = _detect_video_codec(video_path) or ""
+    if src_codec in ("hevc", "h265"):
+        return [
+            ["-c:v", "hevc_videotoolbox", "-q:v", "65"],   # macOS HW HEVC
+            ["-c:v", "libx265", "-crf", "24", "-preset", "fast"],  # SW HEVC
+            ["-c:v", "h264_videotoolbox", "-q:v", "65"],   # macOS HW H.264
+            ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],  # SW H.264
+        ]
+    return [
+        ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+        ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],
+        ["-c:v", "hevc_videotoolbox", "-q:v", "65"],
+        ["-c:v", "libx265", "-crf", "24", "-preset", "fast"],
+    ]
+
+
 def burn_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> None:
     """Hard-burn subtitles into the video frames (always visible in any player).
 
     Tries the ffmpeg ``subtitles`` filter first (requires libass).  If that
     filter is not available in the local binary, falls back to a Pillow-based
-    image overlay (requires ``pip install Pillow``).  Uses h264_videotoolbox
-    for macOS hardware-accelerated re-encode, with libx264 as fallback.
+    image overlay (requires ``pip install Pillow``).
+
+    Re-encodes using the same codec as the source video to avoid inflating
+    the file size (e.g. HEVC source → HEVC output via hevc_videotoolbox).
     """
     ffmpeg = _require_binary("ffmpeg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    codec_candidates: list[list[str]] = [
-        ["-c:v", "h264_videotoolbox", "-q:v", "65"],
-        ["-c:v", "libx264", "-crf", "20", "-preset", "fast"],
-    ]
+    codec_candidates = _codec_candidates_for_video(video_path)
 
     # --- Primary path: libass subtitles filter ---
     srt_filter_path = (
