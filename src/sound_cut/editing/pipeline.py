@@ -22,6 +22,7 @@ from sound_cut.media.ffmpeg_tools import (
     normalize_audio_for_analysis,
     probe_source_media,
     burn_subtitle_track,
+    embed_subtitle_track,
     embed_subtitle_track_mkv,
 )
 from sound_cut.media.render import (
@@ -55,16 +56,16 @@ def _apply_subtitles(
             temp_srt = temp_dir / "subtitle.srt"
             generate_subtitles(rendered_path, temp_srt, replace(subtitle_config, format="srt"))
 
-            if subtitle_config.burn:
+            mode = subtitle_config.embed_mode
+            if mode == "burn":
                 # Hard burn: re-encode video with subtitle pixels baked in.
                 # Output replaces the original rendered file in-place.
                 temp_with_subs = temp_dir / rendered_path.name
                 burn_subtitle_track(rendered_path, temp_srt, temp_with_subs)
                 shutil.move(str(temp_with_subs), str(rendered_path))
                 return None
-            else:
-                # Default: soft subtitle track in MKV container (stream-copy,
-                # no quality loss; works in virtually all major players).
+            elif mode == "mkv":
+                # MKV soft subtitle: stream-copy mux into new container.
                 mkv_path = rendered_path.with_suffix(".mkv")
                 embed_subtitle_track_mkv(
                     rendered_path, temp_srt, mkv_path,
@@ -72,6 +73,12 @@ def _apply_subtitles(
                 )
                 rendered_path.unlink()   # remove the intermediate .mp4
                 return mkv_path          # signal that output moved to .mkv
+            else:
+                # Default "mp4": soft mov_text track embedded in-place.
+                temp_with_subs = temp_dir / rendered_path.name
+                embed_subtitle_track(rendered_path, temp_srt, temp_with_subs)
+                shutil.move(str(temp_with_subs), str(rendered_path))
+                return None
 
     # Audio-only or explicit sidecar_only: write subtitle file beside the output.
     subtitle_path = rendered_path.with_suffix(f".{subtitle_config.format}")

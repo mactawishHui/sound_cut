@@ -62,12 +62,19 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
             help="Split subtitle segments longer than this many characters (0 = disabled, default: 25)",
         )
         self.add_argument(
+            "--subtitle-mkv",
+            action="store_true",
+            help=(
+                "Embed subtitle as soft track in MKV container (stream-copy, no re-encode). "
+                "Works in VLC/mpv. Output file changes to .mkv."
+            ),
+        )
+        self.add_argument(
             "--subtitle-burn",
             action="store_true",
             help=(
                 "Hard-burn subtitles into video frames (requires re-encode; "
-                "universally visible but larger file). "
-                "Default without this flag: soft subtitle track in MKV container."
+                "universally visible but larger file)."
             ),
         )
 
@@ -133,6 +140,12 @@ def _resolve_enhancement_config(args: argparse.Namespace) -> EnhancementConfig:
 
 def _resolve_subtitle_config(args: argparse.Namespace) -> SubtitleConfig:
     api_key = args.subtitle_api_key or os.environ.get("DASHSCOPE_API_KEY")
+    if args.subtitle_burn:
+        embed_mode = "burn"
+    elif args.subtitle_mkv:
+        embed_mode = "mkv"
+    else:
+        embed_mode = "mp4"
     return SubtitleConfig(
         enabled=args.subtitle,
         language=args.subtitle_language,
@@ -140,7 +153,7 @@ def _resolve_subtitle_config(args: argparse.Namespace) -> SubtitleConfig:
         api_key=api_key,
         sidecar_only=args.subtitle_sidecar,
         max_chars_per_subtitle=args.subtitle_max_chars,
-        burn=args.subtitle_burn,
+        embed_mode=embed_mode,
     )
 
 

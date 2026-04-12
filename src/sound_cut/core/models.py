@@ -97,7 +97,11 @@ class SubtitleConfig:
     api_key: str | None = None    # DashScope API key for FunASR (or via DASHSCOPE_API_KEY env)
     sidecar_only: bool = False    # True = only write .srt sidecar, skip embedding in video
     max_chars_per_subtitle: int = 25  # Split segments longer than this many chars (0 = disabled)
-    burn: bool = False            # True = hard-burn subtitles into frames; False (default) = MKV soft track
+    # Subtitle embedding mode for video outputs:
+    #   "mp4"  (default) — soft track inside MP4, mov_text codec; works in IINA/QuickTime/iOS.
+    #   "mkv"            — soft track in MKV container, subrip codec; works in VLC/mpv/most players.
+    #   "burn"           — hard-burn into frames (re-encode required); universally visible.
+    embed_mode: str = "mp4"
 
     def __post_init__(self) -> None:
         if self.format not in SUPPORTED_SUBTITLE_FORMATS:
