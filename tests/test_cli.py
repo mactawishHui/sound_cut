@@ -830,6 +830,7 @@ def test_resolve_subtitle_config_enabled(tmp_path: Path, monkeypatch) -> None:
         subtitle_api_key="sk-explicit",
         subtitle_sidecar=True,
         subtitle_max_chars=30,
+        subtitle_burn=True,
     )
 
     config = cli._resolve_subtitle_config(args)
@@ -842,6 +843,7 @@ def test_resolve_subtitle_config_enabled(tmp_path: Path, monkeypatch) -> None:
     assert config.api_key == "sk-explicit"
     assert config.sidecar_only is True
     assert config.max_chars_per_subtitle == 30
+    assert config.burn is True
 
 
 def test_resolve_subtitle_config_reads_api_key_from_env(monkeypatch) -> None:
@@ -855,6 +857,7 @@ def test_resolve_subtitle_config_reads_api_key_from_env(monkeypatch) -> None:
         subtitle_api_key=None,
         subtitle_sidecar=False,
         subtitle_max_chars=25,
+        subtitle_burn=False,
     )
 
     config = cli._resolve_subtitle_config(args)

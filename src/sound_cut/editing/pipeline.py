@@ -18,7 +18,12 @@ from sound_cut.core.models import (
 )
 from sound_cut.editing.timeline import build_edit_decision_list
 from sound_cut.enhancement.pipeline import enhance_audio
-from sound_cut.media.ffmpeg_tools import normalize_audio_for_analysis, probe_source_media, burn_subtitle_track
+from sound_cut.media.ffmpeg_tools import (
+    normalize_audio_for_analysis,
+    probe_source_media,
+    burn_subtitle_track,
+    embed_subtitle_track_mkv,
+)
 from sound_cut.media.render import (
     render_audio_from_edl,
     render_full_audio,
@@ -38,26 +43,37 @@ def _apply_subtitles(
 ) -> Path | None:
     """Transcribe rendered output and embed/write subtitles.
 
-    Default (sidecar_only=False):
-      - Video: embed as soft subtitle track; no sidecar file kept → returns None.
-      - Audio: write .srt/.vtt sidecar → returns sidecar path.
-
-    With sidecar_only=True:
-      - Write subtitle file only, skip embedding → returns sidecar path.
+    Returns:
+      None          — subtitle hard-burned in place (burn=True); no separate file.
+      .mkv Path     — soft-subtitle MKV produced; caller should treat this as the
+                      new output file (original rendered_path has been deleted).
+      .srt/.vtt Path — sidecar subtitle file (sidecar_only=True or audio input).
     """
     if has_video and not subtitle_config.sidecar_only:
-        # Embed into video; keep everything in a temp dir (no permanent sidecar)
         with tempfile.TemporaryDirectory(prefix="sound-cut-subs-") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
             temp_srt = temp_dir / "subtitle.srt"
-            # subtitles burn filter requires SRT format
             generate_subtitles(rendered_path, temp_srt, replace(subtitle_config, format="srt"))
-            temp_with_subs = temp_dir / rendered_path.name
-            burn_subtitle_track(rendered_path, temp_srt, temp_with_subs)
-            shutil.move(str(temp_with_subs), str(rendered_path))
-        return None
 
-    # Audio-only or explicit sidecar_only: write subtitle file beside the output
+            if subtitle_config.burn:
+                # Hard burn: re-encode video with subtitle pixels baked in.
+                # Output replaces the original rendered file in-place.
+                temp_with_subs = temp_dir / rendered_path.name
+                burn_subtitle_track(rendered_path, temp_srt, temp_with_subs)
+                shutil.move(str(temp_with_subs), str(rendered_path))
+                return None
+            else:
+                # Default: soft subtitle track in MKV container (stream-copy,
+                # no quality loss; works in virtually all major players).
+                mkv_path = rendered_path.with_suffix(".mkv")
+                embed_subtitle_track_mkv(
+                    rendered_path, temp_srt, mkv_path,
+                    language=subtitle_config.language,
+                )
+                rendered_path.unlink()   # remove the intermediate .mp4
+                return mkv_path          # signal that output moved to .mkv
+
+    # Audio-only or explicit sidecar_only: write subtitle file beside the output.
     subtitle_path = rendered_path.with_suffix(f".{subtitle_config.format}")
     generate_subtitles(rendered_path, subtitle_path, subtitle_config)
     return subtitle_path
@@ -267,11 +283,17 @@ def process_audio(
             )
 
     subtitle_path: Path | None = None
+    new_output_path: Path | None = None
     if subtitle is not None and subtitle.enabled:
-        subtitle_path = _apply_subtitles(
+        result = _apply_subtitles(
             rendered_path=output_path,
             subtitle_config=subtitle,
             has_video=render_video_output,
         )
+        if result is not None and result.suffix == ".mkv":
+            # Output was re-muxed to MKV; record new location for the caller.
+            new_output_path = result
+        else:
+            subtitle_path = result
 
-    return replace(summary, subtitle_path=subtitle_path)
+    return replace(summary, subtitle_path=subtitle_path, output_path=new_output_path)

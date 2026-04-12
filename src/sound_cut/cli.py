@@ -61,6 +61,15 @@ class _SoundCutArgumentParser(argparse.ArgumentParser):
             default=25,
             help="Split subtitle segments longer than this many characters (0 = disabled, default: 25)",
         )
+        self.add_argument(
+            "--subtitle-burn",
+            action="store_true",
+            help=(
+                "Hard-burn subtitles into video frames (requires re-encode; "
+                "universally visible but larger file). "
+                "Default without this flag: soft subtitle track in MKV container."
+            ),
+        )
 
     def parse_args(self, args=None, namespace=None):
         argv = sys.argv[1:] if args is None else list(args)
@@ -131,6 +140,7 @@ def _resolve_subtitle_config(args: argparse.Namespace) -> SubtitleConfig:
         api_key=api_key,
         sidecar_only=args.subtitle_sidecar,
         max_chars_per_subtitle=args.subtitle_max_chars,
+        burn=args.subtitle_burn,
     )
 
 
@@ -247,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"output_duration_s={summary.output_duration_s:.3f}")
     print(f"removed_duration_s={summary.removed_duration_s:.3f}")
     print(f"kept_segment_count={summary.kept_segment_count}")
+    if summary.output_path is not None:
+        # Output was re-muxed (e.g. .mp4 → .mkv for soft subtitles).
+        print(f"output_path={summary.output_path}")
     if summary.subtitle_path is not None:
         print(f"subtitle_path={summary.subtitle_path}")
     return 0

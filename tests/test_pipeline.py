@@ -948,14 +948,59 @@ def test_apply_subtitles_writes_srt_for_audio(
     assert embed_calls == []
 
 
-def test_apply_subtitles_video_default_embeds_and_returns_none(
+def test_apply_subtitles_video_default_produces_mkv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default (sidecar_only=False) for video: embed soft subtitle track, return None."""
+    """Default (burn=False, sidecar_only=False) for video: mux into MKV, return .mkv path."""
     video_path = tmp_path / "output.mp4"
     video_path.write_bytes(b"fake video content")
     generate_calls: list = []
-    embed_calls: list = []
+    mkv_calls: list = []
+
+    def fake_generate_subtitles(audio_path, output_path, config):
+        output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+        generate_calls.append((output_path, config.format))
+        return output_path
+
+    def fake_embed_mkv(video_path_arg, srt_path, mkv_path, *, language=None):
+        mkv_path.write_bytes(b"mkv with subs")
+        mkv_calls.append((video_path_arg, srt_path, mkv_path))
+
+    monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
+    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track_mkv", fake_embed_mkv)
+
+    result = _apply_subtitles(
+        rendered_path=video_path,
+        subtitle_config=SubtitleConfig(enabled=True),
+        has_video=True,
+    )
+
+    # Default MKV mode: returns the new .mkv path
+    assert result is not None
+    assert result.suffix == ".mkv"
+    assert result.stem == video_path.stem
+    # Original .mp4 should be removed
+    assert not video_path.exists()
+    # No .srt beside the video
+    assert not video_path.with_suffix(".srt").exists()
+    # embed_subtitle_track_mkv called with SRT in a temp location
+    assert len(mkv_calls) == 1
+    called_video, called_srt, _ = mkv_calls[0]
+    assert called_video == video_path
+    assert called_srt.suffix == ".srt"
+    # generate_subtitles called once, always with SRT for embedding
+    assert len(generate_calls) == 1
+    assert generate_calls[0][1] == "srt"
+
+
+def test_apply_subtitles_video_burn_embeds_and_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With burn=True, hard-burn subtitle into video frames and return None."""
+    video_path = tmp_path / "output.mp4"
+    video_path.write_bytes(b"fake video content")
+    generate_calls: list = []
+    burn_calls: list = []
 
     def fake_generate_subtitles(audio_path, output_path, config):
         output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
@@ -964,27 +1009,23 @@ def test_apply_subtitles_video_default_embeds_and_returns_none(
 
     def fake_burn_subtitle_track(video_path_arg, srt_path, output_path):
         output_path.write_bytes(b"video with subs")
-        embed_calls.append((video_path_arg, srt_path, output_path))
+        burn_calls.append((video_path_arg, srt_path, output_path))
 
     monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
     monkeypatch.setattr("sound_cut.editing.pipeline.burn_subtitle_track", fake_burn_subtitle_track)
 
     result = _apply_subtitles(
         rendered_path=video_path,
-        subtitle_config=SubtitleConfig(enabled=True),
+        subtitle_config=SubtitleConfig(enabled=True, burn=True),
         has_video=True,
     )
 
-    # Default: no permanent sidecar file → returns None
+    # burn=True: in-place replacement → returns None
     assert result is None
-    # No .srt beside the video
-    assert not video_path.with_suffix(".srt").exists()
-    # Embed was called with an SRT in a temp location
-    assert len(embed_calls) == 1
-    called_video, called_srt, _ = embed_calls[0]
+    assert len(burn_calls) == 1
+    called_video, called_srt, _ = burn_calls[0]
     assert called_video == video_path
     assert called_srt.suffix == ".srt"
-    # generate_subtitles called once, always with SRT for embedding
     assert len(generate_calls) == 1
     assert generate_calls[0][1] == "srt"
 
@@ -1018,26 +1059,26 @@ def test_apply_subtitles_sidecar_only_video_writes_srt_no_embed(
     assert embed_calls == []
 
 
-def test_apply_subtitles_video_vtt_format_embeds_srt_not_vtt(
+def test_apply_subtitles_video_vtt_format_mkv_uses_srt_internally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Even with format=vtt, embedding always uses SRT (mov_text codec requires SRT)."""
+    """Even with format=vtt, MKV embedding always uses SRT internally (subrip codec)."""
     video_path = tmp_path / "output.mp4"
     video_path.write_bytes(b"fake video content")
     generate_calls: list = []
-    embed_calls: list = []
+    mkv_calls: list = []
 
     def fake_generate_subtitles(audio_path, output_path, config):
         output_path.write_text("fake subtitle content")
         generate_calls.append(config.format)
         return output_path
 
-    def fake_burn_subtitle_track(video_path_arg, srt_path, output_path):
-        output_path.write_bytes(b"video with subs")
-        embed_calls.append(srt_path)
+    def fake_embed_mkv(video_path_arg, srt_path, mkv_path, *, language=None):
+        mkv_path.write_bytes(b"mkv with subs")
+        mkv_calls.append(srt_path)
 
     monkeypatch.setattr("sound_cut.editing.pipeline.generate_subtitles", fake_generate_subtitles)
-    monkeypatch.setattr("sound_cut.editing.pipeline.burn_subtitle_track", fake_burn_subtitle_track)
+    monkeypatch.setattr("sound_cut.editing.pipeline.embed_subtitle_track_mkv", fake_embed_mkv)
 
     result = _apply_subtitles(
         rendered_path=video_path,
@@ -1045,10 +1086,11 @@ def test_apply_subtitles_video_vtt_format_embeds_srt_not_vtt(
         has_video=True,
     )
 
-    # Default video mode: no permanent sidecar
-    assert result is None
-    # Embedding used SRT regardless of requested format
-    assert len(embed_calls) == 1
-    assert embed_calls[0].suffix == ".srt"
+    # Default MKV mode → returns .mkv path
+    assert result is not None
+    assert result.suffix == ".mkv"
+    # embed_mkv called with SRT regardless of requested format
+    assert len(mkv_calls) == 1
+    assert mkv_calls[0].suffix == ".srt"
     # generate called once with forced SRT format
     assert generate_calls == ["srt"]

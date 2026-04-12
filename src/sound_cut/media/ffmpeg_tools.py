@@ -224,6 +224,44 @@ def export_delivery_audio(source_wav: Path, output_path: Path, source: SourceMed
     _run(command)
 
 
+def embed_subtitle_track_mkv(
+    video_path: Path, srt_path: Path, mkv_path: Path, *, language: str | None = None
+) -> None:
+    """Mux video + SRT into an MKV file using pure stream copy (no re-encode).
+
+    MKV is the recommended soft-subtitle container: virtually all major players
+    (VLC, mpv, most smart TVs and mobile apps) auto-display subtitle tracks
+    embedded in MKV without any extra configuration.
+
+    The original video and audio streams are copied without quality loss.
+    """
+    ffmpeg = _require_binary("ffmpeg")
+    mkv_path.parent.mkdir(parents=True, exist_ok=True)
+    # ISO 639-2 three-letter language code for the subtitle stream metadata.
+    # Defaults to "und" (undetermined) when language is None or unrecognised.
+    _LANG_MAP = {
+        "zh": "chi", "zh-cn": "chi", "zh-tw": "chi",
+        "en": "eng", "ja": "jpn", "ko": "kor",
+        "fr": "fre", "de": "ger", "es": "spa",
+    }
+    lang3 = _LANG_MAP.get((language or "").lower(), "und")
+    _run(
+        [
+            ffmpeg, "-y", "-nostats", "-loglevel", "error",
+            "-i", str(video_path),
+            "-i", str(srt_path),
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-c:s", "subrip",
+            "-map", "0:v",
+            "-map", "0:a",
+            "-map", "1:s",
+            "-metadata:s:s:0", f"language={lang3}",
+            str(mkv_path),
+        ]
+    )
+
+
 def embed_subtitle_track(video_path: Path, srt_path: Path, output_path: Path) -> None:
     ffmpeg = _require_binary("ffmpeg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -399,14 +437,20 @@ def _burn_subtitles_pillow(
         last_err: MediaError | None = None
         for codec_args in codec_candidates:
             try:
+                # NOTE: do NOT pass -r to the concat input — that overrides the
+                # per-entry "duration" values and collapses all frames to 1/r
+                # seconds each, causing all subtitles to appear in the first
+                # few seconds.  Without -r the concat demuxer uses the explicit
+                # duration values and produces correctly-timed pts.
                 _run([
                     ffmpeg, "-y", "-nostats", "-loglevel", "error",
                     "-i", str(video_path),
-                    "-f", "concat", "-safe", "0", "-r", "25", "-i", str(concat_path),
+                    "-f", "concat", "-safe", "0", "-i", str(concat_path),
                     "-filter_complex",
-                    "[0:v][1:v]overlay=(W-w)/2:H-h-10:format=auto,format=yuv420p",
+                    "[1:v]setpts=PTS-STARTPTS[subs];[0:v][subs]overlay=(W-w)/2:H-h-20:eof_action=endall,format=yuv420p[out]",
+                    "-map", "[out]",
+                    "-map", "0:a",
                     *codec_args,
-                    "-c:a", "copy",
                     "-movflags", "+faststart",
                     str(output_path),
                 ])
