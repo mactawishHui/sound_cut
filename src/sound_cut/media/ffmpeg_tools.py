@@ -501,10 +501,9 @@ def _codec_candidates_for_video(video_path: Path) -> list[list[str]]:
     """
     src_codec = _detect_video_codec(video_path) or ""
     src_br = _probe_video_bitrate(video_path)
-    # Add 5 % headroom for subtitle overlay pixels; fall back to 800 k if unknown.
-    target_br = f"{int((src_br or 800_000) * 1.05)}k" if src_br else "800k"
-    # Strip the trailing 'k' unit — ffmpeg accepts plain integers too
-    target_br_val = str(int(float(target_br.rstrip("k")) * 1000)) if target_br.endswith("k") else target_br
+    # Add 5 % headroom for subtitle overlay pixels; fall back to 800 kbps if unknown.
+    # src_br is already in bits/s; pass it directly to ffmpeg -b:v (also bits/s).
+    target_br_val = str(int((src_br or 800_000) * 1.05))
 
     if src_codec in ("hevc", "h265"):
         return [
