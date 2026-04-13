@@ -25,9 +25,8 @@ RUN pip install --no-cache-dir -e "."
 # Copy built frontend into the location Flask expects
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
+COPY start.py ./
+
 EXPOSE 8766
 
-CMD python -c "\
-import os; \
-from sound_cut.api import run_api; \
-run_api(host='0.0.0.0', port=int(os.environ.get('PORT', 8766)))"
+CMD ["python", "start.py"]
