@@ -1,186 +1,183 @@
 # sound-cut
 
-`sound-cut` is a Python CLI for shortening spoken audio by removing low-value pauses while keeping speech content intact.
+`sound-cut` is a Python tool for shortening spoken audio/video by removing low-value pauses, normalizing loudness, enhancing speech quality, and generating subtitles — available as both a **Web UI** and a **CLI**.
 
-## Quick Start
+## Web UI (Recommended)
 
-Run the tool on an audio file:
+### Local Development
 
 ```bash
-python3.11 -m sound_cut input.mp3 --cut
+# 1. Start the API server
+DASHSCOPE_API_KEY=<your-key> python start.py
+
+# 2. Start the frontend dev server (in a separate terminal)
+cd frontend && npm install && npm run dev
 ```
 
-When `--cut` is enabled, this will create a shortened output next to the input file. By default:
+Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-- `input.mp3` -> `input.cut.mp3`
-- `input.m4a` -> `input.cut.m4a`
-- `input.wav` -> `input.cut.wav`
-- `input.mp4` -> `input.cut.mp4`
+### Deploy to Zeabur (Free, China-accessible)
 
-If you want an explicit output path:
+1. Push the repo to GitHub
+2. Create a project on [zeabur.com](https://zeabur.com) — choose **Hong Kong** or **Singapore** region
+3. Add service → Git → select this repo, branch `feature/web-ui`
+4. Set environment variable: `DASHSCOPE_API_KEY=<your-key>`
+5. Generate a domain — done
+
+The Dockerfile handles everything: Node frontend build + Python + ffmpeg.
+
+### Deploy with Docker
 
 ```bash
-python3.11 -m sound_cut input.mp3 -o output.mp3 --cut
+docker build -t sound-cut .
+docker run -p 8080:8080 -e DASHSCOPE_API_KEY=<your-key> sound-cut
 ```
 
-## Requirements
+Open [http://localhost:8080](http://localhost:8080).
 
-- Python `3.11+`
-- `ffmpeg`
-- `ffprobe`
+---
 
-## Installation
+## CLI
 
-Install in editable mode:
+### Quick Start
 
 ```bash
-python3.11 -m pip install -e .[dev]
-```
-
-## How It Works
-
-The CLI:
-
-1. probes the input media
-2. optionally enhances speech when `--enhance-speech` is set
-3. detects speech regions
-4. builds a keep/discard timeline
-5. optionally cuts the source timeline when `--cut` is set
-6. optionally applies loudness normalization when `--auto-volume` is set
-7. exports the requested delivery file
-
-For compressed outputs like `mp3` and `m4a`, delivery bitrate is chosen adaptively in a `64k..128k` range so output size stays reasonable.
-
-## Processing Modes
-
-`--enhance-speech`, `--cut`, and `--auto-volume` are independent features. You can use each one by itself or combine them in one command.
-
-Valid command shapes:
-
-```bash
-sound-cut input.mp3 --enhance-speech
 sound-cut input.mp3 --cut
-sound-cut input.mp3 --auto-volume
-sound-cut input.mp3 --enhance-speech --cut
-sound-cut input.mp3 --enhance-speech --auto-volume
-sound-cut input.mp3 --cut --aggressiveness dense --auto-volume
-sound-cut input.mp3 --auto-volume --target-lufs -14
+sound-cut input.mp4 --cut --auto-volume --enhance-speech
+sound-cut input.mp3 --subtitle
 ```
 
-`--enhance-speech` runs local speech enhancement before optional cutting. `--cut` enables trimming based on the detected speech timeline. `--auto-volume` enables loudness normalization on the final output. No processing mode is enabled by default.
+Default output path:
+- `input.mp3` → `input.cut.mp3`
+- `input.mp4` → `input.cut.mp4`
 
-## Output Rules
-
-- If `-o/--output` is omitted, the output format follows the input suffix when supported.
-- Supported delivery formats are `.mp3`, `.m4a`, `.wav`, and `.mp4`.
-- For `.mp4` output, audio processing runs first, then the processed track is muxed back into video.
-- When `--cut` is enabled for `.mp4`, the same keep/discard timeline is applied to video and audio to keep A/V synchronized.
-- Unsupported input suffixes fall back to `.m4a` when output is inferred automatically.
-- Input and output paths must be different.
-
-## Common Options
-
-- `--aggressiveness {natural,balanced,dense}`
-  Controls how aggressively pauses are removed. Default is `balanced`.
-- `--min-silence-ms N`
-  Override the minimum silence length that can be removed.
-- `--padding-ms N`
-  Keep extra audio around detected speech boundaries.
-- `--crossfade-ms N`
-  Apply short fades at cut boundaries.
-- `--enhance-speech`
-  Enable local offline speech enhancement before optional cutting.
-- `--enhancer-backend {deepfilternet3,resemble-enhance}`
-  Select enhancement backend. Default is `deepfilternet3`. `resemble-enhance` is currently a placeholder backend and not yet runnable.
-- `--enhancer-profile {natural,strong}`
-  Select enhancement strength profile. Default is `natural`.
-- `--model-path PATH`
-  Use an explicit local model directory for enhancement backends. For `deepfilternet3`, this path can point directly to raw model files (manifest not required).
-- `--auto-volume`
-  Enable loudness normalization on the final output. This is opt-in and disabled by default.
-- `--target-lufs N`
-  Set the normalization target when `--auto-volume` is enabled. Default is `-16.0`.
-- `--cut`
-  Enable trimming of the input audio. This is opt-in and disabled by default.
-- `--keep-temp`
-  Keep intermediate analysis audio for debugging.
-
-## Example
-
-More aggressive trimming with explicit output:
+Explicit output:
 
 ```bash
-python3.11 -m sound_cut podcast.mp3 \
-  -o podcast.cut.mp3 \
-  --cut \
-  --aggressiveness dense \
-  --min-silence-ms 140 \
-  --padding-ms 40 \
-  --crossfade-ms 5
+sound-cut input.mp3 -o output.mp3 --cut
 ```
 
-Trim pauses and normalize loudness in the same command:
+### Installation
 
 ```bash
-python3.11 -m sound_cut podcast.mp3 \
-  -o podcast.cut.mp3 \
-  --cut \
-  --aggressiveness dense \
-  --min-silence-ms 140 \
-  --padding-ms 40 \
-  --crossfade-ms 5 \
-  --auto-volume \
-  --target-lufs -14.0
+pip install -e ".[dev]"
 ```
 
-If you omit `--target-lufs`, `--auto-volume` uses the default target of `-16.0`:
+Requires: Python 3.11+, `ffmpeg`, `ffprobe`
+
+---
+
+## Features
+
+| Feature | Flag | Description |
+|---------|------|-------------|
+| Silent cut | `--cut` | Detect and remove long pauses |
+| Auto volume | `--auto-volume` | Loudness normalization (default −16 LUFS) |
+| Speech enhancement | `--enhance-speech` | AI denoising via DeepFilterNet3 |
+| Subtitle generation | `--subtitle` | Speech-to-text via FunASR + DashScope API |
+
+All four features are independent and can be combined freely.
+
+### Processing Pipeline
+
+```
+probe_source_media()
+  → enhance_audio()              # --enhance-speech
+  → normalize_audio_for_analysis()
+  → WebRtcSpeechAnalyzer.analyze()
+  → refine_speech_ranges()
+  → build_edit_decision_list()   # --cut
+  → render_audio_from_edl()
+  → normalize_loudness()         # --auto-volume
+  → generate_subtitles()         # --subtitle
+  → export_delivery_audio()
+→ RenderSummary
+```
+
+---
+
+## CLI Options
+
+### Cut options
+- `--cut` — enable silence removal
+- `--aggressiveness {natural,balanced,dense}` — removal strength, default `balanced`
+- `--min-silence-ms N` — minimum silence length to remove
+- `--padding-ms N` — audio to keep around speech boundaries
+- `--crossfade-ms N` — fade length at cut boundaries
+
+### Volume options
+- `--auto-volume` — enable loudness normalization
+- `--target-lufs N` — normalization target, default `-16.0`
+
+### Enhancement options
+- `--enhance-speech` — enable speech enhancement
+- `--enhancer-backend {deepfilternet3,resemble-enhance}` — backend, default `deepfilternet3`
+- `--enhancer-profile {natural,strong}` — strength, default `natural`
+- `--model-path PATH` — local model directory
+
+### Subtitle options
+- `--subtitle` — enable subtitle generation (requires `DASHSCOPE_API_KEY`)
+- `--subtitle-language LANG` — language hint (e.g. `zh`, `en`, `ja`), default auto-detect
+- `--subtitle-format {srt,vtt}` — output format, default `srt`
+- `--subtitle-sidecar` — output subtitle file only, do not embed
+- `--subtitle-mkv` — embed as MKV soft subtitle track
+- `--subtitle-burn` — burn subtitles into video
+- `--subtitle-max-chars N` — max characters per subtitle line, default `25`
+
+### Other
+- `--keep-temp` — keep intermediate files for debugging
+- `-o / --output PATH` — explicit output path
+
+---
+
+## Examples
+
+Trim pauses aggressively with crossfade:
 
 ```bash
-python3.11 -m sound_cut interview.wav \
-  --auto-volume
+sound-cut podcast.mp3 -o podcast.cut.mp3 \
+  --cut --aggressiveness dense \
+  --min-silence-ms 140 --crossfade-ms 5
 ```
 
-Enhance speech, cut pauses, and normalize loudness in one command:
+Enhance, cut, and normalize in one pass:
 
 ```bash
-python3.11 -m sound_cut lecture.wav \
-  --enhance-speech \
-  --cut \
-  --auto-volume
+sound-cut lecture.wav \
+  --enhance-speech --cut --auto-volume --target-lufs -14
 ```
 
-## Model Commands
-
-Install and inspect offline enhancement models:
+Generate a sidecar subtitle file:
 
 ```bash
-python3.11 -m sound_cut models list
-python3.11 -m sound_cut models install deepfilternet3
+DASHSCOPE_API_KEY=<key> sound-cut interview.mp3 \
+  --subtitle --subtitle-language zh --subtitle-sidecar
 ```
 
-Import a locally downloaded model directory:
+Full pipeline — enhance + cut + normalize + burn subtitles:
 
 ```bash
-python3.11 -m sound_cut models import deepfilternet3 /path/to/model-dir
-python3.11 -m sound_cut models verify deepfilternet3
+DASHSCOPE_API_KEY=<key> sound-cut talk.mp4 \
+  --enhance-speech --cut --auto-volume \
+  --subtitle --subtitle-burn
 ```
 
-`models install` prepares the local model directory and manifest scaffold.
-`models import` copies actual model assets, then `models verify` checks readiness.
-`models list` shows scaffold-only entries as `prepared`.
+---
 
-`DeepFilterNet3` enhancement also requires local runtime dependencies (for example `pip install deepfilternet`).
+## Model Management
+
+```bash
+sound-cut models list
+sound-cut models install deepfilternet3
+sound-cut models import deepfilternet3 /path/to/model-dir
+sound-cut models verify deepfilternet3
+```
+
+DeepFilterNet3 also requires: `pip install deepfilternet`
+
+---
 
 ## CLI Output
-
-The command prints a short summary:
-
-- `input_duration_s`: original duration
-- `output_duration_s`: final duration
-- `removed_duration_s`: removed duration
-- `kept_segment_count`: number of kept speech segments
-
-Example:
 
 ```text
 input_duration_s=49.002
@@ -189,8 +186,16 @@ removed_duration_s=10.600
 kept_segment_count=11
 ```
 
+---
+
 ## Run Tests
 
 ```bash
-python3.11 -m pytest -q
+pytest
+```
+
+Integration tests (requires running API server):
+
+```bash
+python tests/integration/test_api_e2e.py
 ```

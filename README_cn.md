@@ -1,169 +1,183 @@
-# sound-cut
+# sound-cut 声剪
 
-`sound-cut` 是一个 Python 命令行工具，用于缩短语音音频，通过移除低频停顿来保持语音内容完整。
+`sound-cut` 是一个 Python 音视频处理工具，支持自动去除停顿、响度均衡、AI 语音增强和字幕生成，提供 **Web UI** 和 **命令行** 两种使用方式。
 
-## 快速入门
+## Web UI（推荐）
 
-对音频文件运行该工具：
+### 本地开发
 
 ```bash
-python3.11 -m sound_cut input.mp3 --cut
+# 1. 启动 API 服务
+DASHSCOPE_API_KEY=<你的密钥> python start.py
+
+# 2. 另开终端启动前端开发服务器
+cd frontend && npm install && npm run dev
 ```
 
-这将在输入文件旁边生成一个缩短后的输出文件。默认路径：
-- `input.mp3` -> `input.cut.mp3`
-- `input.m4a` -> `input.cut.m4a`
-- `input.wav` -> `input.cut.wav`
-- `input.mp4` -> `input.cut.mp4`
+浏览器访问 [http://localhost:5173](http://localhost:5173)。
 
-如果您需要指定输出路径：
+### 部署到 Zeabur（免费，国内可直接访问）
+
+1. 将代码推送到 GitHub
+2. 在 [zeabur.com](https://zeabur.com) 创建项目，地区选择**香港**或**新加坡**
+3. 添加服务 → Git → 选择本仓库，分支 `feature/web-ui`
+4. 设置环境变量：`DASHSCOPE_API_KEY=<你的密钥>`
+5. 生成域名，部署完成
+
+Dockerfile 已包含所有依赖：Node 前端构建 + Python + ffmpeg，一键部署。
+
+### Docker 部署
 
 ```bash
-python3.11 -m sound_cut input.mp3 -o output.mp3 --cut
+docker build -t sound-cut .
+docker run -p 8080:8080 -e DASHSCOPE_API_KEY=<你的密钥> sound-cut
 ```
 
-## 系统要求
+浏览器访问 [http://localhost:8080](http://localhost:8080)。
 
-- Python `3.11+`
-- `ffmpeg`
-- `ffprobe`
+---
 
-## 安装
-以可编辑模式安装：
-```bash
-python3.11 -m pip install -e .[dev]
-```
+## 命令行（CLI）
 
-## 工作原理
-
-命令行界面 (CLI)：
-1. 探测输入媒体
-2. 在设置 `--enhance-speech` 时先执行语音增强
-3. 检测语音区域
-4. 构建保留/丢弃时间线
-5. 在设置 `--cut` 时剪切源时间线
-6. 在设置 `--auto-volume` 时对最终输出做响度归一化
-7. 导出所请求的音频文件
-
-对于诸如 `mp3` 和 `m4a` 之类的压缩输出，输出比特率会在 `64k` 到 `128k` 的范围内自适应选择，以保持输出文件大小合理。
-
-## 处理模式
-
-`--enhance-speech`、`--cut` 和 `--auto-volume` 是相互独立的功能。它们可以单独使用，也可以在同一条命令里一起使用。
-
-有效的命令形式：
+### 快速入门
 
 ```bash
-sound-cut input.mp3 --enhance-speech
 sound-cut input.mp3 --cut
-sound-cut input.mp3 --auto-volume
-sound-cut input.mp3 --enhance-speech --cut
-sound-cut input.mp3 --enhance-speech --auto-volume
-sound-cut input.mp3 --cut --aggressiveness dense --auto-volume
-sound-cut input.mp3 --auto-volume --target-lufs -14
+sound-cut input.mp4 --cut --auto-volume --enhance-speech
+sound-cut input.mp3 --subtitle
 ```
 
-`--enhance-speech` 会在可选剪切前先进行本地语音增强。`--cut` 会根据检测到的语音时间线执行剪切。`--auto-volume` 会对最终输出启用响度归一化。三种模式默认都不启用。
+默认输出路径：
+- `input.mp3` → `input.cut.mp3`
+- `input.mp4` → `input.cut.mp4`
 
-## 输出规则
+指定输出路径：
 
-- 如果省略 `-o/--output`，则输出格式会跟随输入后缀（如果支持）。
-- 支持的输出格式为 `.mp3`、`.m4a`、`.wav` 和 `.mp4`。
-- 对于 `.mp4` 输出，会先处理音轨，再把处理后的音轨回封装到视频中。
-- 对于 `.mp4` 且启用 `--cut` 的场景，会对音频和视频应用同一条保留/丢弃时间线，保证音视频同步。
-- 不支持的输入后缀在自动推断输出格式时会回退到 `.m4a`。
-- 输入路径和输出路径必须不同。
+```bash
+sound-cut input.mp3 -o output.mp3 --cut
+```
 
-## 常用选项
+### 安装
 
-- `--aggressiveness {natural,balanced,dense}`：控制去除停顿的力度。默认值为 `balanced`。
-- `--min-silence-ms N`：覆盖可去除的最小静音长度。
-- `--padding-ms N`：保留检测到的语音边界周围的额外音频。
-- `--crossfade-ms N`：在剪辑边界处应用短淡入淡出效果。
-- `--enhance-speech`：启用本地离线语音增强（在可选剪切前执行）。
-- `--enhancer-backend {deepfilternet3,resemble-enhance}`：选择增强后端，默认 `deepfilternet3`。`resemble-enhance` 目前仍是占位后端，暂不可直接运行。
-- `--enhancer-profile {natural,strong}`：选择增强强度，默认 `natural`。
-- `--model-path PATH`：显式指定本地模型目录。对于 `deepfilternet3`，该路径可直接指向原始模型文件目录（不强制需要 manifest）。
-- `--auto-volume`：为最终输出启用响度归一化。该功能默认关闭，必须显式开启。
-- `--target-lufs N`：在启用 `--auto-volume` 时设置目标响度。默认值为 `-16.0`。
-- `--cut`：启用输入音频的剪切。该功能默认关闭，必须显式开启。
-- `--keep-temp`：保留中间分析音频以进行调试。
+```bash
+pip install -e ".[dev]"
+```
+
+依赖：Python 3.11+、`ffmpeg`、`ffprobe`
+
+---
+
+## 功能一览
+
+| 功能 | 参数 | 说明 |
+|------|------|------|
+| 静音裁切 | `--cut` | 自动检测并移除长时间停顿 |
+| 音量均衡 | `--auto-volume` | 响度归一化，默认目标 −16 LUFS |
+| 语音增强 | `--enhance-speech` | DeepFilterNet3 AI 降噪，提升人声清晰度 |
+| 字幕生成 | `--subtitle` | FunASR + DashScope API 语音转文字 |
+
+四项功能完全独立，可自由组合。
+
+### 处理流程
+
+```
+probe_source_media()
+  → enhance_audio()              # --enhance-speech
+  → normalize_audio_for_analysis()
+  → WebRtcSpeechAnalyzer.analyze()
+  → refine_speech_ranges()
+  → build_edit_decision_list()   # --cut
+  → render_audio_from_edl()
+  → normalize_loudness()         # --auto-volume
+  → generate_subtitles()         # --subtitle
+  → export_delivery_audio()
+→ RenderSummary
+```
+
+---
+
+## CLI 参数说明
+
+### 静音裁切
+- `--cut` — 启用静音裁切
+- `--aggressiveness {natural,balanced,dense}` — 裁切力度，默认 `balanced`
+- `--min-silence-ms N` — 可被移除的最短静音时长（毫秒）
+- `--padding-ms N` — 语音边界两侧保留的缓冲时长（毫秒）
+- `--crossfade-ms N` — 剪切边界处的交叉淡化时长（毫秒）
+
+### 音量均衡
+- `--auto-volume` — 启用响度归一化
+- `--target-lufs N` — 目标响度，默认 `-16.0`
+
+### 语音增强
+- `--enhance-speech` — 启用语音增强
+- `--enhancer-backend {deepfilternet3,resemble-enhance}` — 增强后端，默认 `deepfilternet3`
+- `--enhancer-profile {natural,strong}` — 增强强度，默认 `natural`
+- `--model-path PATH` — 指定本地模型目录
+
+### 字幕生成
+- `--subtitle` — 启用字幕生成（需要 `DASHSCOPE_API_KEY`）
+- `--subtitle-language LANG` — 语言提示（如 `zh`、`en`、`ja`），默认自动识别
+- `--subtitle-format {srt,vtt}` — 输出格式，默认 `srt`
+- `--subtitle-sidecar` — 只输出字幕文件，不嵌入视频
+- `--subtitle-mkv` — 嵌入为 MKV 软字幕轨道
+- `--subtitle-burn` — 将字幕硬烧录入视频画面
+- `--subtitle-max-chars N` — 每条字幕最大字符数，默认 `25`
+
+### 其他
+- `--keep-temp` — 保留中间文件（调试用）
+- `-o / --output PATH` — 显式指定输出路径
+
+---
 
 ## 示例
 
-更激进的剪辑，并明确输出：
+激进裁切并添加交叉淡化：
 
 ```bash
-python3.11 -m sound_cut podcast.mp3 \
-  -o podcast.cut.mp3 \
-  --cut \
-  --aggressiveness dense \
-  --min-silence-ms 140 \
-  --padding-ms 40 \
-  --crossfade-ms 5
+sound-cut podcast.mp3 -o podcast.cut.mp3 \
+  --cut --aggressiveness dense \
+  --min-silence-ms 140 --crossfade-ms 5
 ```
 
-在同一条命令里同时剪切并做响度归一化：
+语音增强 + 裁切 + 响度均衡一键完成：
 
 ```bash
-python3.11 -m sound_cut podcast.mp3 \
-  -o podcast.cut.mp3 \
-  --cut \
-  --aggressiveness dense \
-  --min-silence-ms 140 \
-  --padding-ms 40 \
-  --crossfade-ms 5 \
-  --auto-volume \
-  --target-lufs -14.0
+sound-cut lecture.wav \
+  --enhance-speech --cut --auto-volume --target-lufs -14
 ```
 
-如果省略 `--target-lufs`，`--auto-volume` 会使用默认目标 `-16.0`：
+生成独立字幕文件：
 
 ```bash
-python3.11 -m sound_cut interview.wav \
-  --auto-volume
+DASHSCOPE_API_KEY=<密钥> sound-cut interview.mp3 \
+  --subtitle --subtitle-language zh --subtitle-sidecar
 ```
 
-在同一条命令里同时执行语音增强、剪切和响度归一化：
+完整流水线 — 增强 + 裁切 + 均衡 + 硬烧字幕：
 
 ```bash
-python3.11 -m sound_cut lecture.wav \
-  --enhance-speech \
-  --cut \
-  --auto-volume
+DASHSCOPE_API_KEY=<密钥> sound-cut talk.mp4 \
+  --enhance-speech --cut --auto-volume \
+  --subtitle --subtitle-burn
 ```
 
-## 模型命令
+---
 
-安装并检查本地增强模型：
+## 模型管理
 
 ```bash
-python3.11 -m sound_cut models list
-python3.11 -m sound_cut models install deepfilternet3
+sound-cut models list
+sound-cut models install deepfilternet3
+sound-cut models import deepfilternet3 /path/to/model-dir
+sound-cut models verify deepfilternet3
 ```
 
-导入本地已下载模型目录：
+DeepFilterNet3 还需要额外安装运行时依赖：`pip install deepfilternet`
 
-```bash
-python3.11 -m sound_cut models import deepfilternet3 /path/to/model-dir
-python3.11 -m sound_cut models verify deepfilternet3
-```
+---
 
-`models install` 会先创建本地模型目录与 manifest 脚手架。
-`models import` 负责拷贝实际模型文件，随后可用 `models verify` 校验是否就绪。
-`models list` 会将仅有脚手架的目录显示为 `prepared` 状态。
-
-`DeepFilterNet3` 增强能力还需要本地运行时依赖（例如 `pip install deepfilternet`）。
-
-## 命令行输出
-
-该命令会打印一个简短的摘要：
-- `input_duration_s`：原始时长
-- `output_duration_s`：最终时长
-- `removed_duration_s`：已移除的时长
-- `kept_segment_count`：保留的语音片段数量
-
-示例：
+## 命令行输出示例
 
 ```text
 input_duration_s=49.002
@@ -172,8 +186,16 @@ removed_duration_s=10.600
 kept_segment_count=11
 ```
 
+---
+
 ## 运行测试
 
 ```bash
-python3.11 -m pytest -q
+pytest
+```
+
+集成测试（需要先启动 API 服务）：
+
+```bash
+python tests/integration/test_api_e2e.py
 ```
