@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, DragEvent } from 'react'
+import { useState, useRef, useCallback, useEffect, type DragEvent } from 'react'
 import './App.css'
 
 // ─── Types ──────────────────────────────────────────────────────────────────

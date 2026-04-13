@@ -10,9 +10,11 @@ RUN npm run build
 # ── Stage 2: Python runtime ─────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# System deps: ffmpeg + build tools
+# System deps: ffmpeg + gcc (needed to compile webrtcvad C extension)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    gcc \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
